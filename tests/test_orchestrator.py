@@ -77,6 +77,7 @@ def build_orchestrator(
         settings=settings,
         verifier=verifier,
         reflections=reflection_store,
+        sleep_fn=lambda _: None,
     )
     return orchestrator, model, planner, tools, verifier, reflection_store
 

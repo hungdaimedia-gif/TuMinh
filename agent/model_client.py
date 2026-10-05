@@ -6,6 +6,7 @@ from typing import Protocol, TypeVar
 
 from openai import (
     APIConnectionError,
+    APIStatusError,
     APITimeoutError,
     BadRequestError,
     InternalServerError,
@@ -140,6 +141,10 @@ class OpenAICompatibleModelClient:
             body = error.body if isinstance(error.body, dict) else {}
             code = error.code or body.get("code")
             if code == "json_validate_failed":
+                raise TransientModelError(f"Transient model request failure: {error}") from error
+            raise
+        except APIStatusError as error:
+            if error.status_code in {413, 429}:
                 raise TransientModelError(f"Transient model request failure: {error}") from error
             raise
         if not response.choices or not response.choices[0].message.content:
