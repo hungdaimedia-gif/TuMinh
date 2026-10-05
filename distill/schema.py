@@ -141,6 +141,7 @@ class TrainingRow(DistillModel):
 class DatasetManifest(DistillModel):
     dataset_version: str = Field(min_length=1)
     source_hashes: list[str]
+    source_provenance: list[ImportProvenance] = Field(default_factory=list)
     curation_version: str = Field(min_length=1)
     redaction_counts: dict[str, int]
     created_at: datetime
@@ -150,6 +151,11 @@ class DatasetManifest(DistillModel):
     def validate_manifest(self) -> DatasetManifest:
         if any(not re.fullmatch(r"[a-f0-9]{64}", value) for value in self.source_hashes):
             raise ValueError("source_hashes must contain lowercase SHA-256 values")
+        if any(
+            provenance.source_sha256 not in self.source_hashes
+            for provenance in self.source_provenance
+        ):
+            raise ValueError("source_provenance must correspond to a source hash")
         if any(value < 0 for value in self.redaction_counts.values()):
             raise ValueError("redaction counts must be non-negative")
         if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
