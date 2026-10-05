@@ -64,7 +64,7 @@
       "No unrelated files are modified."
     ],
     "source": "local",
-    "state": "pending"
+    "state": "succeeded"
   },
   {
     "id": "model-score-failed-case-ids",

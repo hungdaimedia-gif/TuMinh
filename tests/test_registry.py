@@ -87,3 +87,22 @@ def test_registry_describe_tools_reflects_multiple_registrations():
 
     assert set(description.keys()) == {"read_file", "write_file"}
     assert "content" in description["write_file"]["properties"]
+
+
+def test_registry_list_tool_names_empty():
+    registry = ToolRegistry()
+    assert registry.list_tool_names() == ()
+
+
+def test_registry_list_tool_names_multiple_sorted():
+    registry = ToolRegistry()
+
+    class DummyArgs(BaseModel):
+        pass
+
+    registry.register("write_file", DummyArgs, lambda args: {})
+    registry.register("read_file", DummyArgs, lambda args: {})
+    registry.register("execute_command", DummyArgs, lambda args: {})
+
+    assert registry.list_tool_names() == ("execute_command", "read_file", "write_file")
+

@@ -45,6 +45,9 @@ class ToolRegistry:
             raise ToolError(f"Tool {call.name!r} must return a JSON object")
         return result
 
+    def list_tool_names(self) -> tuple[str, ...]:
+        return tuple(sorted(self._tools.keys()))
+
     def describe_tools(self) -> dict[str, dict[str, Any]]:
         """Return each registered tool name mapped to its argument JSON Schema.
 
