@@ -123,6 +123,47 @@ def test_active_model_name_resolves_at_client_construction(monkeypatch):
     assert client.model_name == "tuminh:v2"
 
 
-def test_active_model_name_without_resolver_fails_before_client_construction():
-    with pytest.raises(ModelConfigurationError, match="resolver"):
-        OpenAICompatibleModelClient(make_settings(model_name="tuminh-active"))
+def test_active_model_alias_is_preserved_in_settings():
+    assert make_settings(model_name="tuminh-active").model_name == "tuminh-active"
+
+
+def test_active_model_name_resolves_through_configured_registry(tmp_path, monkeypatch):
+    from distill.registry import DistillModelRegistry
+
+    registry_path = tmp_path / "registry.json"
+    DistillModelRegistry(registry_path).initialize_active("baseline-tag")
+    settings = Settings.from_env(
+        {
+            "MODEL_API_KEY": "test-key",
+            "MODEL_NAME": "tuminh-active",
+            "WORKSPACE_ROOT": str(tmp_path),
+            "DISTILL_REGISTRY_PATH": str(registry_path),
+        }
+    )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(model_client_module, "OpenAI", FakeOpenAI)
+
+    assert OpenAICompatibleModelClient(settings).model_name == "baseline-tag"
+
+
+def test_active_model_name_missing_registry_fails_before_model_client(
+    tmp_path, monkeypatch
+):
+    settings = Settings.from_env(
+        {
+            "MODEL_API_KEY": "test-key",
+            "MODEL_NAME": "tuminh-active",
+            "WORKSPACE_ROOT": str(tmp_path),
+        }
+    )
+
+    def fail_if_created(**kwargs):
+        raise AssertionError("provider client must not be constructed")
+
+    monkeypatch.setattr(model_client_module, "OpenAI", fail_if_created)
+    with pytest.raises(ModelConfigurationError, match="active model"):
+        OpenAICompatibleModelClient(settings)

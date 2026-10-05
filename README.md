@@ -177,6 +177,178 @@ in [`docs/superpowers/plans/2026-10-05-tuminh-distillation.md`](docs/superpowers
 Only explicitly exported, authorized, observable records may enter that
 workflow; external provider sessions are never scraped.
 
+## Optional local distillation and model evolution
+
+Distillation is a separate, explicit local workflow. Normal runtime
+installation does **not** install training dependencies, train a model,
+deploy a candidate, or change the active model. Keep source exports,
+curated datasets, adapters, registry state, and benchmark reports local and
+access-controlled. External data must be lawfully authorized before import;
+the importer requires a source name, authorization/license declaration, and
+the person authorizing it. TuMinh does not scrape provider sessions or collect
+hidden reasoning.
+
+The base runtime and the export, import, curation, registry, purge, and CLI
+help workflows are CPU-only. Benchmarking can also run on CPU when the
+explicit local evaluator supports it. Only optional QLoRA training needs the
+separate compatible CUDA environment described below.
+
+Set `DISTILL_REGISTRY_PATH` to the local registry file if you do not want its
+default, `distill/models/registry.json` under `WORKSPACE_ROOT`. Each command
+also accepts `--registry` where appropriate. Start by explicitly recording
+the baseline tag and its exact model identity and pinned revision:
+
+```powershell
+python -m distill.cli init-active `
+  --model-tag baseline-v1 `
+  --baseline-model-id authorized/base-model `
+  --baseline-model-revision pinned-revision-sha
+```
+
+Runtime processes resolve `MODEL_NAME=tuminh-active` through this registry
+when the model client is constructed at process startup. Resolution does not
+rewrite `.env` and does not fall back if the registry is missing or
+uninitialized. For a local Ollama endpoint, configure:
+
+```dotenv
+MODEL_BASE_URL=http://localhost:11434/v1
+MODEL_NAME=tuminh-active
+DISTILL_REGISTRY_PATH=distill/models/registry.json
+```
+
+The `baseline-v1` tag must be available to the configured local model endpoint.
+Promotions change the registry pointer only; the next runtime process resolves
+the new tag during startup.
+
+Export a trajectory explicitly. Runtime records without both passing
+verification and eval evidence are excluded from training curation:
+
+```powershell
+python -m distill.cli export-runtime `
+  --journal-root memory/trajectories `
+  --task-id task-123 `
+  --output distill/data/raw/task-123.jsonl
+```
+
+External import requires explicit authorization metadata; it validates the
+observable schema and rejects hidden reasoning fields and credentials:
+
+```powershell
+python -m distill.cli import-external .\authorized-export.jsonl `
+  --source-name approved-source `
+  --license-or-authorization "Authorized for local fine-tuning under license X" `
+  --authorized-by "operator@example.test" `
+  --output distill/data/raw/authorized-source.jsonl
+```
+
+Curate one or more validated trajectory exports. The configured
+`MODEL_API_KEY` from the process environment or local `.env`, plus common
+credential patterns, are redacted before writing the dataset and its adjacent
+manifest:
+
+```powershell
+python -m distill.cli curate `
+  --input distill/data/raw/task-123.jsonl `
+  --input distill/data/raw/authorized-source.jsonl `
+  --output distill/data/curated/dataset.jsonl
+```
+
+Training is optional and requires an authorized, pinned base model, a curated
+dataset with passing verification/eval evidence, a compatible CUDA/Linux or
+WSL2 environment, and the separate training stack. Install it only in that
+training environment:
+
+```powershell
+python -m pip install -r distill/requirements-training.txt
+python -m distill.cli train `
+  --config distill/config.example.toml `
+  --dataset distill/data/curated/dataset.jsonl
+```
+
+Copy and edit `distill/config.example.toml` first; use an authorized model
+license declaration, exact revision, and ignored candidate output path. The
+command prints the candidate manifest path. Its benchmark ID is reserved and
+remains pending: training neither benchmarks, deploys, nor promotes.
+`rtx_3060_ti_8gb` is an optional conservative profile, not a VRAM guarantee.
+
+Deploy explicitly. Local llama.cpp conversion and Ollama are only invoked by
+this command; candidate registration occurs only after the deployment service
+successfully converts, installs, and verifies the candidate:
+
+```powershell
+python -m distill.cli deploy `
+  --manifest distill/models/candidates/candidate-example/candidate-manifest.json `
+  --adapter distill/models/candidates/candidate-example `
+  --converter-script C:\src\llama.cpp\convert_lora_to_gguf.py `
+  --base-model-path C:\models\authorized-base
+```
+
+Benchmark an installed candidate with the bundled versioned eval case set, or
+provide a local `--eval-set`. A local evaluator plugin is required because the
+bundled cases contain descriptions and safety labels, not objective
+model-input/expected-output pairs. Supply `--evaluator module:factory`; the
+factory returns an object implementing:
+
+```python
+def evaluate(
+    model_name,
+    cases,
+    *,
+    tool_limits,
+    decoding_config,
+) -> ModelScore:
+    ...
+```
+
+`model_name` is the registered local model tag (the current active tag for the
+baseline and the candidate ID for the candidate). The evaluator owns the
+actual objective task/evidence mapping, maps those tags to its local runtime,
+and returns `ModelScore` values with the exact model ID and pinned revision
+from the registry/candidate manifest. Benchmarking runs it on the baseline and
+candidate with shared keyword-only settings and writes a typed report. It does not
+invent self-scoring evidence or infer benchmark success from training. The
+candidate's reserved benchmark ID is used as-is:
+
+```powershell
+python -m distill.cli benchmark `
+  --candidate-manifest distill/models/candidates/candidate-example/candidate-manifest.json `
+  --evaluator my_local_evaluator:build `
+  --output distill/reports/candidate-example-benchmark.json
+```
+
+Promotion displays baseline/candidate scores and safety outcomes, then
+requires an explicit affirmative interactive confirmation and approver name.
+The registry independently verifies report completeness, exact baseline and
+candidate identity, pass-rate non-regression, and all safety-critical results.
+An ineligible report cannot be promoted:
+
+```powershell
+python -m distill.cli promote `
+  --candidate-id candidate-example `
+  --report distill/reports/candidate-example-benchmark.json
+```
+
+Rollback is a separate explicit registry operation and preserves installed
+versions:
+
+```powershell
+python -m distill.cli rollback
+```
+
+Purge removes only the raw file whose filename and content match the exact
+source SHA-256 and removes rows linked to that hash from curated datasets:
+
+```powershell
+python -m distill.cli purge `
+  --source-sha256 <64-character-lowercase-sha256> `
+  --raw-root distill/data/raw `
+  --curated-root distill/data/curated
+```
+
+All commands operate on explicit local files and paths. CLI help, unit tests,
+and deterministic evals use fakes and do not contact a model provider,
+download models, invoke Ollama, or require training dependencies.
+
 ## Offline checks
 
 ```powershell

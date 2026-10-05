@@ -36,6 +36,7 @@ class Settings:
     model_name: str
     workspace_root: Path
     tasks_file: Path
+    distill_registry_path: Path
     task_state_file: Path
     reflection_file: Path
     pull_request_state_file: Path
@@ -86,6 +87,11 @@ class Settings:
         tasks_file = Path(values.get("TASKS_FILE", "tasks/tasks.json")).expanduser()
         if not tasks_file.is_absolute():
             tasks_file = workspace_root / tasks_file
+        distill_registry_path = Path(
+            values.get("DISTILL_REGISTRY_PATH", "distill/models/registry.json")
+        ).expanduser()
+        if not distill_registry_path.is_absolute():
+            distill_registry_path = workspace_root / distill_registry_path
 
         raw_allowed_commands = values.get("ALLOWED_COMMANDS")
         if raw_allowed_commands is None:
@@ -117,6 +123,7 @@ class Settings:
             model_name=model_name,
             workspace_root=workspace_root,
             tasks_file=tasks_file.resolve(),
+            distill_registry_path=distill_registry_path.resolve(),
             task_state_file=workspace_root / "memory" / "task_state.json",
             reflection_file=workspace_root / "memory" / "reflection.json",
             pull_request_state_file=workspace_root / "memory" / "pull_request_state.json",

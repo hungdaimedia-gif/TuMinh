@@ -45,6 +45,27 @@ def test_settings_do_not_require_model_key_for_offline_components() -> None:
     assert settings.model_api_key is None
 
 
+def test_distillation_registry_path_defaults_under_workspace(tmp_path: Path) -> None:
+    settings = Settings.from_env({"WORKSPACE_ROOT": str(tmp_path)})
+
+    assert settings.distill_registry_path == (
+        tmp_path.resolve() / "distill" / "models" / "registry.json"
+    )
+
+
+def test_distillation_registry_path_accepts_explicit_workspace_relative_path(
+    tmp_path: Path,
+) -> None:
+    settings = Settings.from_env(
+        {
+            "WORKSPACE_ROOT": str(tmp_path),
+            "DISTILL_REGISTRY_PATH": "local/registry.json",
+        }
+    )
+
+    assert settings.distill_registry_path == tmp_path.resolve() / "local" / "registry.json"
+
+
 def test_pull_request_creation_is_opt_in(tmp_path: Path) -> None:
     default_settings = Settings.from_env({"WORKSPACE_ROOT": str(tmp_path)})
     enabled_settings = Settings.from_env(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Protocol, TypeVar
 
 from openai import (
@@ -12,6 +13,7 @@ from openai import (
 from pydantic import BaseModel
 
 from agent.config import Settings
+from distill.registry import DistillModelRegistry, RegistryError
 
 
 TModel = TypeVar("TModel", bound=BaseModel)
@@ -31,6 +33,19 @@ class TransientModelError(RuntimeError):
 
 class ModelNameResolver(Protocol):
     def resolve(self, model_name: str) -> str: ...
+
+
+class RegistryModelNameResolver:
+    def __init__(self, registry_path: Path):
+        self.registry = DistillModelRegistry(registry_path)
+
+    def resolve(self, model_name: str) -> str:
+        try:
+            return self.registry.resolve_active_model_name(model_name)
+        except RegistryError as error:
+            raise ModelConfigurationError(
+                f"Could not resolve active model from registry: {error}"
+            ) from error
 
 
 class ModelClient(Protocol):
@@ -67,6 +82,10 @@ class OpenAICompatibleModelClient:
         if not settings.model_api_key:
             raise ModelConfigurationError(
                 "MODEL_API_KEY is required to construct the live model client"
+            )
+        if settings.model_name == "tuminh-active" and model_name_resolver is None:
+            model_name_resolver = RegistryModelNameResolver(
+                settings.distill_registry_path
             )
         self.model_name = resolve_model_name(settings.model_name, model_name_resolver)
         self._client = OpenAI(
