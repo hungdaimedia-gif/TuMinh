@@ -17,6 +17,7 @@ from agent.models import (
 from agent.planner import Planner
 from agent.prompts import EXECUTION_SYSTEM_PROMPT
 from agent.verifier import Verifier
+from tools.git_ops import GitOperations, SelfEvaluator as GitSelfEvaluator
 from tools.registry import ToolRegistry
 
 
@@ -40,13 +41,19 @@ class Orchestrator:
         settings: Settings,
         verifier: Verifier,
         reflections: ReflectionStore,
+        git_operations: GitOperations | None = None,
+        self_evaluator: GitSelfEvaluator | None = None,
     ):
+        if (git_operations is None) != (self_evaluator is None):
+            raise ValueError("Git operations and a self-evaluator must be configured together")
         self.planner = planner
         self.model = model
         self.tools = tools
         self.settings = settings
         self.verifier = verifier
         self.reflections = reflections
+        self.git_operations = git_operations
+        self.self_evaluator = self_evaluator
 
     def run(self, task: Task) -> TaskResult:
         changed_files: list[str] = []
@@ -63,6 +70,8 @@ class Orchestrator:
             )
 
     def _run(self, task: Task, changed_files: list[str]) -> TaskResult:
+        if self.git_operations is not None:
+            self.git_operations.ensure_task_branch(task.id)
         plan = self._with_model_retries(lambda: self.planner.create_plan(task))
         if plan.task_id != task.id:
             raise ValueError("Planner returned a plan for a different task")
@@ -100,6 +109,8 @@ class Orchestrator:
                 history.append({"type": "tool_result", "result": tool_result})
                 continue
 
+            if self.git_operations is not None:
+                changed_files[:] = self.git_operations.changed_files()
             verification = self.verifier.verify(plan, changed_files)
             history.append(
                 {
@@ -108,6 +119,13 @@ class Orchestrator:
                 }
             )
             if verification.passed:
+                if self.git_operations is not None and self.self_evaluator is not None:
+                    self.git_operations.commit_verified(
+                        task.id,
+                        self._commit_message(task.title),
+                        task_verification=verification,
+                        self_evaluator=self.self_evaluator,
+                    )
                 return self._succeeded(
                     task,
                     summary=decision.final_response or "",
@@ -216,3 +234,8 @@ class Orchestrator:
         for candidate in candidates:
             if isinstance(candidate, str) and candidate not in changed_files:
                 changed_files.append(candidate)
+
+    @staticmethod
+    def _commit_message(title: str) -> str:
+        concise_title = " ".join(title.split())[:64]
+        return f"feat: {concise_title}"

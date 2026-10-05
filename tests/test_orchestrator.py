@@ -17,6 +17,7 @@ from agent.orchestrator import OrchestrationError, Orchestrator
 from tests.fakes import (
     FakePlanner,
     FakeReflectionStore,
+    FakeSelfEvaluator,
     FakeToolRegistry,
     FakeVerifier,
     ScriptedModel,
@@ -293,3 +294,79 @@ def test_reflection_failure_is_not_reported_as_success():
 
     with pytest.raises(OrchestrationError, match="reflection"):
         orchestrator.run(sample_task())
+
+
+def test_git_branch_is_created_before_planning_and_commit_follows_verification():
+    events = []
+
+    class FakeGitOperations:
+        def ensure_task_branch(self, task_id):
+            events.append(("branch", task_id))
+            return "tuminh/task-task-1"
+
+        def changed_files(self):
+            events.append(("changed_files",))
+            return ["README.md"]
+
+        def commit_verified(self, task_id, message, *, task_verification, self_evaluator):
+            events.append(("commit", task_id, task_verification.passed))
+            assert self_evaluator is not None
+            return "commit abc1234"
+
+    orchestrator, model, planner, tools, verifier, reflections = build_orchestrator(
+        2,
+        [AgentDecision(final_response="Verified output.")],
+    )
+    orchestrator.git_operations = FakeGitOperations()
+    orchestrator.self_evaluator = FakeSelfEvaluator(passed=True)
+
+    result = orchestrator.run(sample_task())
+
+    assert result.status == "succeeded"
+    assert result.changed_files == ["README.md"]
+    assert events[0] == ("branch", "task-1")
+    assert events[-1] == ("commit", "task-1", True)
+    assert planner.calls == [sample_task()]
+    assert model.call_count == 1
+    assert tools.calls == []
+    assert verifier.calls[0][1] == ["README.md"]
+    assert reflections.reflections[0].outcome == "succeeded"
+
+
+def test_failed_task_verification_does_not_attempt_git_commit():
+    class FakeGitOperations:
+        commits = 0
+
+        def ensure_task_branch(self, task_id):
+            return "tuminh/task-task-1"
+
+        def changed_files(self):
+            return ["README.md"]
+
+        def commit_verified(self, *args, **kwargs):
+            self.commits += 1
+            raise AssertionError("Commit must not run after failed verification")
+
+    git = FakeGitOperations()
+    verifier = FakeVerifier(
+        VerificationResult(passed=False, commands=[["pytest"]], failures=["failed"])
+    )
+    orchestrator, _, _, _, _, _ = build_orchestrator(
+        2,
+        [AgentDecision(final_response="Not verified.")],
+        verifier=verifier,
+    )
+    orchestrator.settings = Settings.from_env(
+        {
+            "WORKSPACE_ROOT": str(orchestrator.settings.workspace_root),
+            "MAX_STEPS": "2",
+            "MAX_CORRECTIONS": "1",
+        }
+    )
+    orchestrator.git_operations = git
+    orchestrator.self_evaluator = FakeSelfEvaluator(passed=True)
+
+    result = orchestrator.run(sample_task())
+
+    assert result.status == "failed"
+    assert git.commits == 0
