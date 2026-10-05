@@ -35,13 +35,23 @@ class FakePlanner:
 
 
 class FakeVerifier:
-    def __init__(self, result: VerificationResult | None = None):
-        self.result = result or VerificationResult(passed=True, commands=[], failures=[])
+    def __init__(
+        self,
+        result: VerificationResult | Sequence[VerificationResult] | None = None,
+    ):
+        if result is None:
+            self.results = [VerificationResult(passed=True, commands=[], failures=[])]
+        elif isinstance(result, VerificationResult):
+            self.results = [result]
+        else:
+            self.results = list(result)
         self.calls: list[tuple[TaskPlan, Sequence[str]]] = []
 
     def verify(self, plan: TaskPlan, changed_files: Sequence[str]) -> VerificationResult:
         self.calls.append((plan, changed_files))
-        return self.result
+        if len(self.calls) > len(self.results):
+            raise AssertionError("FakeVerifier received an unexpected extra verification")
+        return self.results[len(self.calls) - 1]
 
 
 class FakeReflectionStore:
@@ -63,16 +73,17 @@ class FakeToolRegistry:
 
 
 class FakeCommandRunner:
-    def __init__(self, exit_code: int = 0):
+    def __init__(self, exit_code: int = 0, timed_out: bool = False):
         self.exit_code = exit_code
+        self.timed_out = timed_out
         self.calls: list[list[str]] = []
 
     def run(self, argv, cwd):
         self.calls.append(list(argv))
         return CommandResult(
             argv=list(argv),
-            exit_code=self.exit_code,
+            exit_code=None if self.timed_out else self.exit_code,
             stdout="",
             stderr="",
-            timed_out=False,
+            timed_out=self.timed_out,
         )

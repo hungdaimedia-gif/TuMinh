@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Protocol, TypeVar
 
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
 from pydantic import BaseModel
 
 from agent.config import Settings
@@ -17,6 +23,10 @@ class ModelConfigurationError(ValueError):
 
 class ModelResponseError(ValueError):
     """Raised when a provider response does not contain usable JSON content."""
+
+
+class TransientModelError(RuntimeError):
+    """Raised for a provider request failure that is safe to retry."""
 
 
 class ModelNameResolver(Protocol):
@@ -70,14 +80,22 @@ class OpenAICompatibleModelClient:
         user_payload: str,
         response_type: type[TModel],
     ) -> TModel:
-        response = self._client.chat.completions.create(
-            model=self.model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_payload},
-            ],
-            response_format={"type": "json_object"},
-        )
+        try:
+            response = self._client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_payload},
+                ],
+                response_format={"type": "json_object"},
+            )
+        except (
+            APIConnectionError,
+            APITimeoutError,
+            InternalServerError,
+            RateLimitError,
+        ) as error:
+            raise TransientModelError(f"Transient model request failure: {error}") from error
         if not response.choices or not response.choices[0].message.content:
             raise ModelResponseError("Model response did not contain JSON content")
         return response_type.model_validate_json(response.choices[0].message.content)
