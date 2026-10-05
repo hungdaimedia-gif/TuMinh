@@ -24,6 +24,7 @@ _DEFAULT_ALLOWED_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("git", "commit"),
     ("git", "push"),
     ("gh", "issue", "list"),
+    ("gh", "pr", "list"),
     ("gh", "pr", "create"),
 )
 
@@ -37,6 +38,7 @@ class Settings:
     tasks_file: Path
     task_state_file: Path
     reflection_file: Path
+    pull_request_state_file: Path
     task_source: TaskSource
     github_repository: str | None
     create_pull_request: bool
@@ -117,6 +119,7 @@ class Settings:
             tasks_file=tasks_file.resolve(),
             task_state_file=workspace_root / "memory" / "task_state.json",
             reflection_file=workspace_root / "memory" / "reflection.json",
+            pull_request_state_file=workspace_root / "memory" / "pull_request_state.json",
             task_source=task_source,
             github_repository=github_repository,
             create_pull_request=raw_create_pull_request == "true",

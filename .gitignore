@@ -5,5 +5,6 @@ __pycache__/
 .pytest_cache/
 memory/reflection.json
 memory/task_state.json
+memory/pull_request_state.json
 memory/trajectories/*.jsonl
 *.egg-info/

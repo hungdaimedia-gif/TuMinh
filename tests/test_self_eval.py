@@ -29,6 +29,8 @@ def test_product_only_change_skips_agent_eval(tmp_path):
 
 def test_every_agent_surface_requires_self_evaluation(tmp_path):
     for changed_file in (
+        "main.py",
+        "pyproject.toml",
         "tools/registry.py",
         "tests/test_models.py",
         "evals/cases.json",

@@ -11,19 +11,26 @@ from tools.github_ops import GitHubOperationError, GitHubOperations
 
 
 class FakeRunner:
-    def __init__(self, output="[]", error=None):
+    def __init__(self, output="[]", error=None, pull_request_list="[]"):
         self.output = output
         self.error = error
+        self.pull_request_list = pull_request_list
         self.calls = []
 
     def run(self, argv, cwd):
-        self.calls.append(list(argv))
+        command = list(argv)
+        self.calls.append(command)
         if self.error is not None:
             raise self.error
+        output = (
+            self.pull_request_list
+            if command[:3] == ["gh", "pr", "list"]
+            else self.output
+        )
         return CommandResult(
-            argv=list(argv),
+            argv=command,
             exit_code=0,
-            stdout=self.output,
+            stdout=output,
             stderr="",
             timed_out=False,
         )
@@ -158,6 +165,19 @@ def test_pull_request_pushes_only_after_caller_requests_and_returns_url(tmp_path
 
     assert url == "https://github.com/owner/repo/pull/9"
     assert runner.calls == [
+        [
+            "gh",
+            "pr",
+            "list",
+            "--head",
+            "tuminh/task-issue-7",
+            "--state",
+            "open",
+            "--json",
+            "url",
+            "--repo",
+            "owner/repo",
+        ],
         ["git", "push", "--set-upstream", "origin", "tuminh/task-issue-7"],
         [
             "gh",
@@ -176,18 +196,24 @@ def test_pull_request_pushes_only_after_caller_requests_and_returns_url(tmp_path
 
 
 def test_pull_request_failure_is_reported(tmp_path):
-    runner = FakeRunner(
-        error=CommandError(
-            "push failed",
-            result=CommandResult(
-                argv=["git", "push"],
-                exit_code=1,
-                stdout="",
-                stderr="remote unavailable",
-                timed_out=False,
-            ),
-        )
-    )
+    class FailPushRunner(FakeRunner):
+        def run(self, argv, cwd):
+            command = list(argv)
+            self.calls.append(command)
+            if command[:2] == ["git", "push"]:
+                raise CommandError(
+                    "push failed",
+                    result=CommandResult(
+                        argv=command,
+                        exit_code=1,
+                        stdout="",
+                        stderr="remote unavailable",
+                        timed_out=False,
+                    ),
+                )
+            return super().run(argv, cwd)
+
+    runner = FailPushRunner()
 
     with pytest.raises(GitHubOperationError, match="remote unavailable"):
         GitHubOperations(runner).create_pull_request(
@@ -205,6 +231,14 @@ def test_pull_request_creation_failure_after_push_is_visible(tmp_path):
         def run(self, argv, cwd):
             command = list(argv)
             self.calls.append(command)
+            if command[:3] == ["gh", "pr", "list"]:
+                return CommandResult(
+                    argv=command,
+                    exit_code=0,
+                    stdout="[]",
+                    stderr="",
+                    timed_out=False,
+                )
             if command[:3] == ["gh", "pr", "create"]:
                 raise CommandError(
                     "pull request failed",
@@ -231,4 +265,19 @@ def test_pull_request_creation_failure_after_push_is_visible(tmp_path):
             "Title",
             "Body",
         )
-    assert runner.calls[0][:2] == ["git", "push"]
+    assert runner.calls[1][:2] == ["git", "push"]
+
+
+def test_existing_pull_request_is_returned_without_creating_another(tmp_path):
+    url = "https://github.com/owner/repo/pull/9"
+    runner = FakeRunner(pull_request_list=json.dumps([{"url": url}]))
+
+    result = GitHubOperations(runner).create_pull_request(
+        "tuminh/task-issue-7",
+        "Title",
+        "Body",
+    )
+
+    assert result == url
+    assert len(runner.calls) == 1
+    assert runner.calls[0][:3] == ["gh", "pr", "list"]

@@ -5,6 +5,7 @@ import pytest
 from agent.config import Settings
 from agent.models import Task, TaskResult
 from main import AgentApplication, main, request_skill_approval
+from tools.github_ops import GitHubOperationError
 
 
 class FakeApp:
@@ -242,6 +243,7 @@ def test_application_creates_pr_only_after_successful_task_commit(tmp_path):
         "verified-and-committed",
         "state",
         "pull-request",
+        "state",
     ]
 
 
@@ -285,3 +287,80 @@ def test_application_never_creates_pr_for_failed_task(tmp_path):
     )
 
     assert app.run_once().status == "failed"
+
+
+def test_failed_pr_creation_is_persisted_and_retried_before_new_task(tmp_path):
+    settings = Settings.from_env(
+        make_env(tmp_path, CREATE_PULL_REQUEST="true")
+    )
+    task = Task(
+        id="github:9",
+        title="Create PR",
+        description="Verified task.",
+        source="github",
+    )
+    results_saved = []
+
+    class Source:
+        def next_task(self):
+            return task
+
+    class Queue:
+        def save_result(self, task_id, result):
+            results_saved.append((task_id, result.status))
+
+    class Orchestrator:
+        def run(self, _task):
+            return TaskResult(task_id="github:9", status="succeeded", summary="Committed.")
+
+    class Git:
+        def ensure_task_branch(self, _task_id):
+            return "tuminh/task-github-9"
+
+    class FailingGitHub:
+        def create_pull_request(self, **_kwargs):
+            raise GitHubOperationError("temporary remote failure")
+
+    app = AgentApplication(
+        task_source=Source(),
+        task_queue=Queue(),
+        orchestrator=Orchestrator(),
+        settings=settings,
+        git_operations=Git(),
+        github_operations=FailingGitHub(),
+    )
+
+    with pytest.raises(GitHubOperationError, match="temporary remote failure"):
+        app.run_once()
+    assert settings.pull_request_state_file.exists()
+    assert results_saved == [("github:9", "succeeded")]
+
+    class NoNewTaskSource:
+        def next_task(self):
+            raise AssertionError("Pending PR must be retried before task ingestion")
+
+    class SuccessfulGitHub:
+        def __init__(self):
+            self.calls = 0
+
+        def create_pull_request(self, **_kwargs):
+            self.calls += 1
+            return "https://github.com/owner/repo/pull/9"
+
+    github = SuccessfulGitHub()
+    retry_app = AgentApplication(
+        task_source=NoNewTaskSource(),
+        task_queue=Queue(),
+        orchestrator=Orchestrator(),
+        settings=settings,
+        git_operations=Git(),
+        github_operations=github,
+    )
+
+    result = retry_app.run_once()
+
+    assert result.status == "succeeded"
+    assert "https://github.com/owner/repo/pull/9" in result.summary
+    assert github.calls == 1
+    assert results_saved == [("github:9", "succeeded"), ("github:9", "succeeded")]
+    assert not settings.pull_request_state_file.exists()

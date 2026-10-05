@@ -11,7 +11,16 @@ _SELF_TEST_COMMANDS = (
     ("python", "-m", "pytest", "-q"),
     ("python", "-m", "evals.run"),
 )
-_SELF_MODIFIED_PATHS = ("agent", "tools", "tests", "evals", "skills/approved")
+_SELF_MODIFIED_PATHS = (
+    "agent",
+    "tools",
+    "tests",
+    "evals",
+    "skills/approved",
+    "main.py",
+    "pyproject.toml",
+    ".env.example",
+)
 
 
 class SelfEvaluator:

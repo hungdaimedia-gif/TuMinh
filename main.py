@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
+import os
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -10,7 +13,7 @@ from pathlib import Path
 from typing import Protocol, Sequence
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from agent.config import Settings, SettingsError
 from agent.github_source import GitHubIssueSource, GitHubSourceError
@@ -56,6 +59,22 @@ class RunCommandArguments(BaseModel):
     argv: list[str] = Field(min_length=1)
 
 
+class PendingPullRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = Field(min_length=1)
+    branch: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    body: str
+    result: TaskResult
+
+    @model_validator(mode="after")
+    def validate_result(self) -> PendingPullRequest:
+        if self.result.status != "succeeded" or self.result.task_id != self.task_id:
+            raise ValueError("Pending pull request must reference a succeeded matching task")
+        return self
+
+
 class AgentApplication:
     def __init__(
         self,
@@ -64,7 +83,7 @@ class AgentApplication:
         task_queue: TaskQueue,
         orchestrator: Orchestrator,
         settings: Settings,
-        git_operations: GitOperations,
+        git_operations: GitOperations | None,
         github_operations: GitHubOperations | None = None,
     ):
         self.task_source = task_source
@@ -75,26 +94,111 @@ class AgentApplication:
         self.github_operations = github_operations
 
     def run_once(self) -> TaskResult | None:
+        if self.settings.create_pull_request:
+            pending = self._read_pending_pull_request()
+            if pending is not None:
+                return self._publish_pending_pull_request(pending)
         task = self.task_source.next_task()
         if task is None:
             return None
         result = self.orchestrator.run(task)
-        self.task_queue.save_result(task.id, result)
         if result.status == "succeeded" and self.settings.create_pull_request:
-            if self.github_operations is None:
+            if self.github_operations is None or self.git_operations is None:
                 raise GitHubOperationError(
-                    "CREATE_PULL_REQUEST is enabled but GitHub operations are unavailable"
+                    "CREATE_PULL_REQUEST is enabled but Git operations are unavailable"
                 )
             branch = self.git_operations.ensure_task_branch(task.id)
-            pull_request_url = self.github_operations.create_pull_request(
+            pending = PendingPullRequest(
+                task_id=task.id,
                 branch=branch,
                 title=task.title,
                 body=result.summary,
+                result=result,
             )
-            result = result.model_copy(
-                update={"summary": f"{result.summary}\nPull request: {pull_request_url}"}
-            )
+            self._write_pending_pull_request(pending)
+            self.task_queue.save_result(task.id, result)
+            return self._publish_pending_pull_request(pending)
+        self.task_queue.save_result(task.id, result)
         return result
+
+    def _read_pending_pull_request(self) -> PendingPullRequest | None:
+        path = self.settings.pull_request_state_file
+        self._assert_pr_state_path_contained()
+        if not path.exists():
+            return None
+        try:
+            return PendingPullRequest.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValidationError, ValueError) as error:
+            raise GitHubOperationError(
+                f"Could not read pending pull request state: {error}"
+            ) from error
+
+    def _write_pending_pull_request(self, pending: PendingPullRequest) -> None:
+        path = self.settings.pull_request_state_file
+        temporary_path: Path | None = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._assert_pr_state_path_contained()
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary_file:
+                temporary_path = Path(temporary_file.name)
+                temporary_file.write(pending.model_dump_json())
+                temporary_file.write("\n")
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            os.replace(temporary_path, path)
+        except OSError as error:
+            raise GitHubOperationError(
+                f"Could not persist pending pull request state: {error}"
+            ) from error
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def _publish_pending_pull_request(
+        self,
+        pending: PendingPullRequest,
+    ) -> TaskResult:
+        if self.github_operations is None:
+            raise GitHubOperationError(
+                "CREATE_PULL_REQUEST is enabled but GitHub operations are unavailable"
+            )
+        pull_request_url = self.github_operations.create_pull_request(
+            branch=pending.branch,
+            title=pending.title,
+            body=pending.body,
+        )
+        result = pending.result.model_copy(
+            update={"summary": f"{pending.result.summary}\nPull request: {pull_request_url}"}
+        )
+        self.task_queue.save_result(pending.task_id, result)
+        try:
+            self._assert_pr_state_path_contained()
+            self.settings.pull_request_state_file.unlink(missing_ok=True)
+        except OSError as error:
+            raise GitHubOperationError(
+                f"Pull request was created but pending state could not be cleared: {error}"
+            ) from error
+        return result
+
+    def _assert_pr_state_path_contained(self) -> None:
+        root = self.settings.workspace_root.resolve()
+        path = self.settings.pull_request_state_file.resolve(strict=False)
+        try:
+            path.relative_to(root)
+        except ValueError as error:
+            raise GitHubOperationError(
+                "Pending pull request state must remain inside WORKSPACE_ROOT"
+            ) from error
 
 
 def create_task_source(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
+import os
 import re
 from pathlib import Path, PurePosixPath
 from typing import Protocol, Sequence
@@ -26,6 +28,7 @@ class GitOperations:
         self._task_branch: str | None = None
         self._base_branch: str | None = None
         self._baseline_status: dict[str, str] = {}
+        self._baseline_fingerprints: dict[str, str] = {}
 
     def ensure_task_branch(self, task_id: str) -> str:
         target_branch = self._branch_for_task(task_id)
@@ -62,6 +65,10 @@ class GitOperations:
 
         self._task_branch = target_branch
         self._baseline_status = baseline
+        self._baseline_fingerprints = {
+            path: self._fingerprint(path)
+            for path in baseline
+        }
         return target_branch
 
     def changed_files(self) -> list[str]:
@@ -156,7 +163,10 @@ class GitOperations:
         self._assert_current_task_branch()
         current = self._read_status()
         for path, baseline_state in self._baseline_status.items():
-            if current.get(path) != baseline_state:
+            if (
+                current.get(path) != baseline_state
+                or self._fingerprint(path) != self._baseline_fingerprints[path]
+            ):
                 raise GitOperationError(
                     f"pre-existing unrelated change was modified or removed: {path}"
                 )
@@ -231,6 +241,26 @@ class GitOperations:
         if not resolved.is_file():
             raise GitOperationError(f"Untracked Git path is not a regular file: {git_path}")
         return resolved
+
+    def _fingerprint(self, git_path: str) -> str:
+        path = self.workspace.joinpath(*PurePosixPath(git_path).parts)
+        try:
+            if path.is_symlink():
+                content = b"symlink:" + os.readlink(path).encode("utf-8")
+                return hashlib.sha256(content).hexdigest()
+            if not path.exists():
+                return "missing"
+            if not path.is_file():
+                return f"non-file:{path.stat().st_mode}"
+            digest = hashlib.sha256()
+            with path.open("rb") as source:
+                for chunk in iter(lambda: source.read(64 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        except OSError as error:
+            raise GitOperationError(
+                f"Could not fingerprint pre-existing change {git_path}: {error}"
+            ) from error
 
     @classmethod
     def _branch_for_task(cls, task_id: str) -> str:

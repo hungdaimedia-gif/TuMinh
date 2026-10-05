@@ -72,8 +72,10 @@ class TrajectoryJournal:
             r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{12,}\b",
             r"\bAKIA[0-9A-Z]{16}\b",
             r"\bsk-[A-Za-z0-9]{16,}\b",
+            r"\b(?:database|db|connection|redis|mongo|postgres|mysql)[_-]?(?:url|uri)\s*[:=]\s*[^\s,;]+",
         )
     )
+    _URL_USERINFO_PATTERN = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@")
     _ALLOWED_EVENT_TYPES = {
         "task",
         "plan",
@@ -248,6 +250,10 @@ class TrajectoryJournal:
             sanitized = value
             for secret in self.secret_values:
                 sanitized = sanitized.replace(secret, "[REDACTED]")
+            sanitized = self._URL_USERINFO_PATTERN.sub(
+                r"\1[REDACTED]@",
+                sanitized,
+            )
             for pattern in self._SENSITIVE_VALUE_PATTERNS:
                 sanitized = pattern.sub(lambda match: _redacted_match(match.group(0)), sanitized)
             encoded = sanitized.encode("utf-8")

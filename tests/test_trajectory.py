@@ -34,6 +34,24 @@ def test_nested_secret_values_are_redacted(tmp_path):
     assert serialized.count("[REDACTED]") == 2
 
 
+def test_credentials_in_database_urls_are_redacted(tmp_path):
+    journal = TrajectoryJournal(tmp_path / "trajectories")
+
+    journal.append(
+        "task-1",
+        "tool_result",
+        {
+            "connection": "postgresql://alice:sample-password@db.example/app",
+            "database_url": "postgresql://bob:another-password@db.example/app",
+        },
+    )
+
+    serialized = journal.path_for_task("task-1").read_text(encoding="utf-8")
+    assert "sample-password" not in serialized
+    assert "another-password" not in serialized
+    assert "db.example" in serialized
+
+
 @pytest.mark.parametrize("task_id", ["../escape", "..", "folder/task", "C:\\outside"])
 def test_unsafe_task_id_is_rejected(tmp_path, task_id):
     journal = TrajectoryJournal(tmp_path / "trajectories")

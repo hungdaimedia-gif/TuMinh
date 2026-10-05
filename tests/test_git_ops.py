@@ -135,6 +135,24 @@ def test_commit_refuses_preexisting_change_that_was_modified_again(tmp_path):
     assert runner.commits == []
 
 
+def test_existing_dirty_file_content_cannot_be_overwritten_while_status_stays_same(tmp_path):
+    (tmp_path / "user-file.txt").write_text("original user content\n", encoding="utf-8")
+    runner = FakeGitCommandRunner(statuses={"user-file.txt": "??"})
+    git = GitOperations(tmp_path, runner)
+    git.ensure_task_branch("issue-4")
+    (tmp_path / "user-file.txt").write_text("overwritten content\n", encoding="utf-8")
+
+    with pytest.raises(GitOperationError, match="pre-existing"):
+        git.commit_verified(
+            "issue-4",
+            "feat: change",
+            task_verification=VerificationResult(passed=True, commands=[], failures=[]),
+            self_evaluator=FakeSelfEvaluator(passed=True),
+        )
+
+    assert runner.commits == []
+
+
 def test_commit_refuses_ambiguous_staged_changes(tmp_path):
     runner = FakeGitCommandRunner()
     git = GitOperations(tmp_path, runner)
