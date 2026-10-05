@@ -376,3 +376,170 @@ def test_unknown_quantization_and_hardware_profile_are_rejected(tmp_path):
         TrainingConfig(**{**payload, "quantization": "magic"})
     with pytest.raises(ValidationError, match="hardware_profile"):
         TrainingConfig(**{**payload, "hardware_profile": "fictional-gpu"})
+
+
+def test_training_config_defaults_epochs_alpha_and_target_modules(tmp_path):
+    config = valid_training_config(tmp_path)
+
+    assert config.num_train_epochs == 1
+    assert config.lora_alpha is None
+    assert config.target_modules is None
+
+
+def test_training_config_accepts_custom_epochs_alpha_and_mlp_target_modules(tmp_path):
+    config = valid_training_config(tmp_path).model_copy(
+        update={
+            "num_train_epochs": 3,
+            "lora_alpha": 32,
+            "target_modules": [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+            ],
+        }
+    )
+
+    assert config.num_train_epochs == 3
+    assert config.lora_alpha == 32
+    assert list(config.target_modules) == [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ]
+
+
+def test_training_config_rejects_invalid_epoch_and_alpha_bounds(tmp_path):
+    payload = valid_training_config(tmp_path).model_dump()
+
+    for field, value in (
+        ("num_train_epochs", 0),
+        ("num_train_epochs", 101),
+        ("lora_alpha", 0),
+        ("lora_alpha", 513),
+    ):
+        with pytest.raises(ValidationError):
+            TrainingConfig(**{**payload, field: value})
+
+
+def test_training_config_rejects_empty_or_duplicate_target_modules(tmp_path):
+    payload = valid_training_config(tmp_path).model_dump()
+
+    with pytest.raises(ValidationError, match="target_modules"):
+        TrainingConfig(**{**payload, "target_modules": []})
+    with pytest.raises(ValidationError, match="target_modules"):
+        TrainingConfig(**{**payload, "target_modules": ["q_proj", "q_proj"]})
+
+
+def test_training_config_rejects_unsupported_target_module(tmp_path):
+    payload = valid_training_config(tmp_path).model_dump()
+
+    with pytest.raises(ValidationError, match="target_modules"):
+        TrainingConfig(**{**payload, "target_modules": ["not_a_real_module"]})
+
+
+def test_training_config_loads_epoch_alpha_and_target_modules_from_toml(tmp_path):
+    config_file = tmp_path / "training.toml"
+    config_file.write_text(
+        """
+[training]
+model_id = "synthetic/model"
+model_revision = "revision-sha"
+license_or_authorization = "Authorized synthetic test model"
+quantization = "4bit"
+sequence_length = 1024
+batch_size = 1
+gradient_accumulation_steps = 8
+lora_rank = 16
+num_train_epochs = 2
+lora_alpha = 32
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+output_path = "candidates/run-from-toml"
+hardware_profile = "rtx_3060_ti_8gb"
+""",
+        encoding="utf-8",
+    )
+
+    config = TrainingConfig.from_toml(config_file)
+
+    assert config.num_train_epochs == 2
+    assert config.lora_alpha == 32
+    assert config.target_modules == (
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    )
+
+
+def test_rtx_3060_ti_profile_rejects_high_rank_with_mlp_target_modules(tmp_path):
+    backend = FakeTrainingBackend(cuda_available=True)
+    trainer = make_trainer(tmp_path, backend)
+    dataset = write_dataset(tmp_path / "curated" / "dataset.jsonl")
+    config = valid_training_config(tmp_path).model_copy(
+        update={
+            "hardware_profile": "rtx_3060_ti_8gb",
+            "lora_rank": 128,
+            "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj"],
+        }
+    )
+
+    with pytest.raises(TrainingOutOfMemoryError, match="lora_rank"):
+        trainer.train(dataset, config)
+
+    assert backend.invocations == 0
+
+
+def test_rtx_3060_ti_profile_allows_mlp_target_modules_within_rank_limit(tmp_path):
+    backend = FakeTrainingBackend(cuda_available=True)
+    trainer = make_trainer(tmp_path, backend)
+    dataset = write_dataset(tmp_path / "curated" / "dataset.jsonl")
+    config = valid_training_config(tmp_path).model_copy(
+        update={
+            "hardware_profile": "rtx_3060_ti_8gb",
+            "lora_rank": 32,
+            "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj"],
+        }
+    )
+
+    manifest = trainer.train(dataset, config)
+
+    assert backend.invocations == 1
+    assert manifest.training_config["target_modules"] == [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "up_proj",
+        "down_proj",
+    ]
+
+
+def test_qlora_backend_resolves_default_alpha_and_target_modules_when_unset(tmp_path):
+    from distill.trainer import resolve_lora_alpha, resolve_target_modules
+
+    config = valid_training_config(tmp_path)
+
+    assert resolve_lora_alpha(config) == config.lora_rank * 2
+    assert resolve_target_modules(config) == ("q_proj", "k_proj", "v_proj", "o_proj")
+
+
+def test_qlora_backend_resolves_explicit_alpha_and_target_modules_when_set(tmp_path):
+    from distill.trainer import resolve_lora_alpha, resolve_target_modules
+
+    config = valid_training_config(tmp_path).model_copy(
+        update={"lora_alpha": 64, "target_modules": ["q_proj", "gate_proj"]}
+    )
+
+    assert resolve_lora_alpha(config) == 64
+    assert tuple(resolve_target_modules(config)) == ("q_proj", "gate_proj")
