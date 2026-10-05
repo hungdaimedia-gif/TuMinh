@@ -137,3 +137,50 @@ def test_explicit_interpreter_path_is_left_unchanged(tmp_path, monkeypatch):
     runner.run([sys.executable, "-m", "pytest", "-q"], cwd=tmp_path)
 
     assert captured["command"] == [sys.executable, "-m", "pytest", "-q"]
+
+
+def test_is_allowed_true_for_allowlisted_argv(monkeypatch):
+    import subprocess as subprocess_module
+
+    called = {"count": 0}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        called["count"] += 1
+        return FakeCompleted()
+
+    monkeypatch.setattr(subprocess_module, "run", fake_run)
+    runner = CommandRunner([[sys.executable, "-c"]], timeout_seconds=2)
+
+    assert runner.is_allowed([sys.executable, "-c", "print('hi')"]) is True
+    assert called["count"] == 0
+
+
+def test_is_allowed_false_for_disallowed_argv_without_execution(monkeypatch):
+    import subprocess as subprocess_module
+
+    called = {"count": 0}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        called["count"] += 1
+        return FakeCompleted()
+
+    monkeypatch.setattr(subprocess_module, "run", fake_run)
+    runner = CommandRunner([[sys.executable, "-c"]], timeout_seconds=2)
+
+    assert runner.is_allowed(["echo", "hello"]) is False
+    assert called["count"] == 0
+
+
+def test_is_allowed_false_for_empty_argv():
+    runner = CommandRunner([[sys.executable, "-c"]], timeout_seconds=2)
+    assert runner.is_allowed([]) is False

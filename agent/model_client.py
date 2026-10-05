@@ -129,6 +129,7 @@ class OpenAICompatibleModelClient:
                     {"role": "user", "content": user_payload},
                 ],
                 response_format={"type": "json_object"},
+                max_tokens=800,
             )
         except (
             APIConnectionError,

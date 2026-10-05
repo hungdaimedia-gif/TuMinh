@@ -38,6 +38,24 @@ class CommandRunner:
         self.allowed_argv_prefixes = tuple(prefixes)
         self.timeout_seconds = timeout_seconds
 
+    def _is_prefix_match(self, command: Sequence[str], prefix: tuple[str]) -> bool:
+        if not command or len(command) < len(prefix):
+            return False
+        expected = tuple(command[: len(prefix)])
+        return expected == prefix
+
+    def is_allowed(self, argv: Sequence[str]) -> bool:
+        if not argv:
+            return False
+
+        command = []
+        for part in argv:
+            if not isinstance(part, str) or not part or "\x00" in part:
+                return False
+            command.append(part)
+
+        return any(self._is_prefix_match(command, prefix) for prefix in self.allowed_argv_prefixes)
+
     def run(self, argv: Sequence[str], cwd: Path) -> CommandResult:
         command = list(argv)
         if not command or any(not isinstance(part, str) or not part for part in command):
@@ -45,8 +63,7 @@ class CommandRunner:
         if any("\x00" in part for part in command):
             raise CommandError("Command argv cannot contain NUL characters")
         if not any(
-            len(command) >= len(prefix) and tuple(command[: len(prefix)]) == prefix
-            for prefix in self.allowed_argv_prefixes
+            self._is_prefix_match(command, prefix) for prefix in self.allowed_argv_prefixes
         ):
             raise CommandError(f"Command is not allowlisted: {command!r}")
 
