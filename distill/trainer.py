@@ -498,36 +498,7 @@ class Trainer:
         )
 
     def _validate_output_path(self, output_path: Path) -> Path:
-        configured_path = Path(output_path)
-        if configured_path.name in {"", ".", ".."} or not self._CANDIDATE_ID.fullmatch(
-            configured_path.name
-        ):
-            raise TrainingConfigError("Candidate output must use a safe candidate ID")
-        if self.candidate_root.name not in {"candidates", "checkpoints"}:
-            raise TrainingConfigError(
-                "Candidate root must be a validated ignored candidates/ or checkpoints/ directory"
-            )
-        root = self.candidate_root.resolve(strict=False)
-        target = configured_path.resolve(strict=False)
-        try:
-            relative = target.relative_to(root)
-        except ValueError as error:
-            raise TrainingConfigError(
-                "Candidate output must remain beneath the validated candidates/ directory"
-            ) from error
-        if len(relative.parts) != 1:
-            raise TrainingConfigError(
-                "Candidate output must be a direct child of the candidates/ directory"
-            )
-        for path in (configured_path, *configured_path.parents, self.candidate_root, *self.candidate_root.parents):
-            if path.exists() and path.is_symlink():
-                raise TrainingConfigError("Candidate output path must not traverse a symlink")
-        if target.exists():
-            raise TrainingConfigError(f"Candidate output already exists: {target}")
-        repo_root = self._find_git_root(root)
-        if repo_root is not None:
-            self._require_git_ignored(target, repo_root)
-        return target
+        return validate_candidate_output_path(output_path, self.candidate_root)
 
     @staticmethod
     def _validate_staged_artifacts(stage: Path) -> None:
@@ -536,3 +507,43 @@ class Trainer:
         for path in stage.rglob("*"):
             if path.is_symlink():
                 raise TrainingError("Training backend produced a symlinked candidate artifact")
+
+
+def validate_candidate_output_path(output_path: Path, candidate_root: Path) -> Path:
+    """Apply the trainer's containment, symlink, and repository-ignore guard."""
+    configured_path = Path(output_path)
+    root_path = Path(candidate_root)
+    if configured_path.name in {"", ".", ".."} or not Trainer._CANDIDATE_ID.fullmatch(
+        configured_path.name
+    ):
+        raise TrainingConfigError("Candidate output must use a safe candidate ID")
+    if root_path.name not in {"candidates", "checkpoints"}:
+        raise TrainingConfigError(
+            "Candidate root must be a validated ignored candidates/ or checkpoints/ directory"
+        )
+    root = root_path.resolve(strict=False)
+    target = configured_path.resolve(strict=False)
+    try:
+        relative = target.relative_to(root)
+    except ValueError as error:
+        raise TrainingConfigError(
+            "Candidate output must remain beneath the validated candidates/ directory"
+        ) from error
+    if len(relative.parts) != 1:
+        raise TrainingConfigError(
+            "Candidate output must be a direct child of the candidates/ directory"
+        )
+    for path in (
+        configured_path,
+        *configured_path.parents,
+        root_path,
+        *root_path.parents,
+    ):
+        if path.exists() and path.is_symlink():
+            raise TrainingConfigError("Candidate output path must not traverse a symlink")
+    if target.exists():
+        raise TrainingConfigError(f"Candidate output already exists: {target}")
+    repo_root = Trainer._find_git_root(root)
+    if repo_root is not None:
+        Trainer._require_git_ignored(target, repo_root)
+    return target

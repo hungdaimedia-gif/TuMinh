@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from distill.deploy import ConversionConfig, OllamaError
 from distill.schema import (
     BenchmarkReport,
     BenchmarkMetadata,
@@ -59,6 +60,53 @@ class FakeTrainingBackend:
             "training_completed": True,
             "dataset_path": dataset_path.name,
         }
+
+
+class FakeConverter:
+    def __init__(self, failure: Exception | None = None):
+        self.failure = failure
+        self.calls: list[tuple[Path, Path, ConversionConfig]] = []
+
+    def convert(
+        self,
+        adapter_path: Path,
+        output_path: Path,
+        config: ConversionConfig,
+    ) -> Path:
+        self.calls.append((adapter_path, output_path, config))
+        output_path.mkdir(parents=True, exist_ok=True)
+        partial_output = output_path / "partial.gguf"
+        partial_output.write_bytes(b"synthetic-conversion")
+        if self.failure is not None:
+            raise self.failure
+        model_path = output_path / "model.gguf"
+        partial_output.replace(model_path)
+        return model_path
+
+
+class FakeOllamaAdapter:
+    def __init__(
+        self,
+        install_error: OllamaError | None = None,
+        *,
+        confirm_installed: bool = True,
+        returned_tag: str | None = None,
+    ):
+        self.install_error = install_error
+        self.confirm_installed = confirm_installed
+        self.returned_tag = returned_tag
+        self.installed_tags: list[str] = []
+        self.install_calls: list[tuple[Path, str]] = []
+
+    def install_candidate(self, model_path: Path, candidate_id: str) -> str:
+        self.install_calls.append((model_path, candidate_id))
+        if self.install_error is not None:
+            raise self.install_error
+        self.installed_tags.append(candidate_id)
+        return self.returned_tag if self.returned_tag is not None else candidate_id
+
+    def is_installed(self, model_tag: str) -> bool:
+        return self.confirm_installed and model_tag in self.installed_tags
 
 
 def valid_candidate_manifest(candidate_id: str) -> CandidateManifest:
