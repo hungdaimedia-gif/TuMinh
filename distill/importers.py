@@ -94,6 +94,10 @@ class RuntimeExporter:
 
 
 class ExternalImporter:
+    _MAX_SOURCE_FILE_BYTES = 64 * 1024 * 1024
+    _MAX_EVENTS_PER_TRAJECTORY = 1_000
+    _MAX_EVENT_BYTES = 64 * 1024
+
     _ALLOWED_EVENT_TYPES = {
         "task",
         "user_message",
@@ -122,31 +126,60 @@ class ExternalImporter:
         source_name: str,
         license_or_authorization: str,
         authorized_by: str,
+        source_model_id: str | None = None,
+        source_model_revision: str | None = None,
     ) -> list[TrajectoryExport]:
-        if not source_name.strip():
-            raise DistillImportError("source_name is required")
-        if not license_or_authorization.strip():
-            raise DistillImportError("license_or_authorization is required")
-        if not authorized_by.strip():
-            raise DistillImportError("authorized_by is required")
         source_path = Path(path)
+        if not source_name.strip():
+            raise DistillImportError(f"{source_path}: source_name is required")
+        if not license_or_authorization.strip():
+            raise DistillImportError(f"{source_path}: license_or_authorization is required")
+        if not authorized_by.strip():
+            raise DistillImportError(f"{source_path}: authorized_by is required")
+
+        try:
+            source_stat = source_path.stat()
+        except OSError as error:
+            raise DistillImportError(f"{source_path}: Could not access the supplied external export") from error
+        if source_stat.st_size > self._MAX_SOURCE_FILE_BYTES:
+            raise DistillImportError(f"{source_path}: External export exceeds size limit")
+
         try:
             source_bytes = source_path.read_bytes()
-            content = source_bytes.decode("utf-8")
-        except (OSError, UnicodeError) as error:
-            raise DistillImportError("Could not read the supplied external export") from error
+        except OSError as error:
+            raise DistillImportError(f"{source_path}: Could not read the supplied external export") from error
+        if len(source_bytes) > self._MAX_SOURCE_FILE_BYTES:
+            raise DistillImportError(f"{source_path}: External export exceeds size limit")
         if not source_bytes:
-            raise DistillImportError("External export file is empty")
+            raise DistillImportError(f"{source_path}: External export file is empty")
+        try:
+            content = source_bytes.decode("utf-8")
+        except UnicodeError as error:
+            raise DistillImportError(f"{source_path}: External export is not valid UTF-8") from error
 
-        blocks = _split_export_blocks(content)
+        try:
+            blocks = _split_export_blocks(
+                content,
+                max_events_per_trajectory=self._MAX_EVENTS_PER_TRAJECTORY,
+                max_event_bytes=self._MAX_EVENT_BYTES,
+            )
+        except DistillImportError as error:
+            raise DistillImportError(f"{source_path}: {error}") from error
+
         source_hash = hashlib.sha256(source_bytes).hexdigest()
-        provenance = ImportProvenance(
-            source_name=source_name,
-            license_or_authorization=license_or_authorization,
-            authorized_by=authorized_by,
-            imported_at=datetime.now(UTC),
-            source_sha256=source_hash,
-        )
+        try:
+            provenance = ImportProvenance(
+                source_name=source_name,
+                license_or_authorization=license_or_authorization,
+                authorized_by=authorized_by,
+                source_model_id=source_model_id,
+                source_model_revision=source_model_revision,
+                imported_at=datetime.now(UTC),
+                source_sha256=source_hash,
+            )
+        except ValidationError as error:
+            raise DistillImportError("External import provenance is invalid") from error
+
         trajectories: list[TrajectoryExport] = []
         seen_trajectory_ids: set[str] = set()
         for header_line, event_lines in blocks:
@@ -165,14 +198,14 @@ class ExternalImporter:
                     eval_passed=header.eval_passed,
                     events=events,
                 )
-            except DistillImportError:
-                raise
+            except DistillImportError as error:
+                raise DistillImportError(f"{source_path}: {error}") from error
             except (ValidationError, ValueError) as error:
                 raise DistillImportError(
-                    "External export contains an invalid trajectory schema or unsafe field"
+                    f"{source_path}: External export contains an invalid trajectory schema or unsafe field"
                 ) from error
             if trajectory.trajectory_id in seen_trajectory_ids:
-                raise DistillImportError("External export contains a duplicate trajectory id")
+                raise DistillImportError(f"{source_path}: External export contains a duplicate trajectory id")
             seen_trajectory_ids.add(trajectory.trajectory_id)
             trajectories.append(trajectory)
         return trajectories
@@ -210,7 +243,12 @@ class ExternalImporter:
             raise DistillImportError("External trajectory contains no user/assistant/tool messages")
 
 
-def _split_export_blocks(content: str) -> list[tuple[str, list[str]]]:
+def _split_export_blocks(
+    content: str,
+    *,
+    max_events_per_trajectory: int,
+    max_event_bytes: int,
+) -> list[tuple[str, list[str]]]:
     blocks: list[tuple[str, list[str]]] = []
     current_header: str | None = None
     current_events: list[str] = []
@@ -227,6 +265,10 @@ def _split_export_blocks(content: str) -> list[tuple[str, list[str]]]:
             if current_header is not None:
                 if not current_events:
                     raise DistillImportError("External trajectory header has no events")
+                if len(current_events) > max_events_per_trajectory:
+                    raise DistillImportError(
+                        "External trajectory exceeds event count limit"
+                    )
                 blocks.append((current_header, current_events))
             current_header = line
             current_events = []
@@ -235,9 +277,18 @@ def _split_export_blocks(content: str) -> list[tuple[str, list[str]]]:
                 f"External export must start with a trajectory header at line {line_number}"
             )
         else:
+            if len(current_events) >= max_events_per_trajectory:
+                raise DistillImportError("External trajectory exceeds event count limit")
+            encoded_line = line.encode("utf-8")
+            if len(encoded_line) > max_event_bytes:
+                raise DistillImportError(
+                    "External event exceeds encoded size limit"
+                )
             current_events.append(line)
     if current_header is None or not current_events:
         raise DistillImportError("External export must contain a header and at least one event")
+    if len(current_events) > max_events_per_trajectory:
+        raise DistillImportError("External trajectory exceeds event count limit")
     blocks.append((current_header, current_events))
     return blocks
 

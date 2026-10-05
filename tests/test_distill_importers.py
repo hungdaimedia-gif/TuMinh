@@ -98,6 +98,124 @@ def test_external_import_records_provenance_and_source_hash(tmp_path):
     assert trajectory.provenance.imported_at.tzinfo == UTC
 
 
+def test_external_import_accepts_multiple_unique_trajectories(tmp_path):
+    source = tmp_path / "multiple.jsonl"
+    fixture = FIXTURES / "authorized-external-export.jsonl"
+    first_block = fixture.read_text(encoding="utf-8")
+    second_block = (
+        first_block.replace(
+            '"trajectory-external-1"',
+            '"trajectory-external-2"',
+        )
+        .replace('"task-external-1"', '"task-external-2"')
+    )
+    source.write_text(first_block + second_block, encoding="utf-8")
+
+    imported = ExternalImporter().import_file(
+        source,
+        source_name="deepseek",
+        license_or_authorization="Synthetic fixture authorization.",
+        authorized_by="test-operator",
+    )
+
+    assert [record.trajectory_id for record in imported] == [
+        "trajectory-external-1",
+        "trajectory-external-2",
+    ]
+    assert imported[0].provenance.source_sha256 == imported[1].provenance.source_sha256
+
+
+def test_external_import_records_source_model_identity(tmp_path):
+    source = tmp_path / "agent.jsonl"
+    source.write_bytes((FIXTURES / "authorized-external-export.jsonl").read_bytes())
+
+    imported = ExternalImporter().import_file(
+        source,
+        source_name="claude",
+        license_or_authorization="Synthetic fixture authorization.",
+        authorized_by="test-operator",
+        source_model_id="provider/model",
+        source_model_revision="revision-1",
+    )
+
+    assert imported[0].provenance.source_model_id == "provider/model"
+    assert imported[0].provenance.source_model_revision == "revision-1"
+
+
+def test_external_import_rejects_revision_without_model_id(tmp_path):
+    source = tmp_path / "agent.jsonl"
+    source.write_bytes((FIXTURES / "authorized-external-export.jsonl").read_bytes())
+
+    with pytest.raises(DistillImportError, match="provenance"):
+        ExternalImporter().import_file(
+            source,
+            source_name="claude",
+            license_or_authorization="Synthetic fixture authorization.",
+            authorized_by="test-operator",
+            source_model_revision="revision-1",
+        )
+
+
+def test_external_import_rejects_source_over_size_limit(tmp_path, monkeypatch):
+    source = tmp_path / "oversized.jsonl"
+    source.write_bytes((FIXTURES / "authorized-external-export.jsonl").read_bytes())
+    monkeypatch.setattr(
+        ExternalImporter,
+        "_MAX_SOURCE_FILE_BYTES",
+        source.stat().st_size - 1,
+    )
+
+    with pytest.raises(DistillImportError, match="size limit"):
+        ExternalImporter().import_file(
+            source,
+            source_name="claude",
+            license_or_authorization="Synthetic fixture authorization.",
+            authorized_by="test-operator",
+        )
+
+
+def test_external_import_rejects_event_over_encoded_size_limit(tmp_path, monkeypatch):
+    source = tmp_path / "large-event.jsonl"
+    source.write_bytes((FIXTURES / "authorized-external-export.jsonl").read_bytes())
+    monkeypatch.setattr(ExternalImporter, "_MAX_EVENT_BYTES", 64)
+
+    with pytest.raises(DistillImportError, match="event.*size limit"):
+        ExternalImporter().import_file(
+            source,
+            source_name="claude",
+            license_or_authorization="Synthetic fixture authorization.",
+            authorized_by="test-operator",
+        )
+
+
+def test_external_import_rejects_too_many_events_per_trajectory(tmp_path, monkeypatch):
+    source = tmp_path / "too-many-events.jsonl"
+    source.write_bytes((FIXTURES / "authorized-external-export.jsonl").read_bytes())
+    monkeypatch.setattr(ExternalImporter, "_MAX_EVENTS_PER_TRAJECTORY", 2)
+
+    with pytest.raises(DistillImportError, match="event count limit"):
+        ExternalImporter().import_file(
+            source,
+            source_name="claude",
+            license_or_authorization="Synthetic fixture authorization.",
+            authorized_by="test-operator",
+        )
+
+
+def test_external_import_rejects_duplicate_trajectory_ids_within_file(tmp_path):
+    source = tmp_path / "duplicate.jsonl"
+    block = (FIXTURES / "authorized-external-export.jsonl").read_text(encoding="utf-8")
+    source.write_text(block + block, encoding="utf-8")
+
+    with pytest.raises(DistillImportError, match="duplicate trajectory id"):
+        ExternalImporter().import_file(
+            source,
+            source_name="claude",
+            license_or_authorization="Synthetic fixture authorization.",
+            authorized_by="test-operator",
+        )
+
+
 def test_external_import_rejects_private_reasoning_without_partial_write(tmp_path):
     source = tmp_path / "invalid.jsonl"
     source.write_bytes((FIXTURES / "invalid-private-fields.jsonl").read_bytes())
