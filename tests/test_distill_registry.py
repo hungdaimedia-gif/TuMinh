@@ -55,14 +55,97 @@ def eligible_report() -> BenchmarkReport:
 
 
 def setup_registry(tmp_path, candidate_id="candidate-v2"):
-    registry = DistillModelRegistry(tmp_path / "registry.json")
-    registry.initialize_active("baseline-v1")
+    registry = DistillModelRegistry(tmp_path / "registry-matched.json")
+    registry.initialize_active(
+        "baseline-v1",
+        baseline_model_id="baseline-model",
+        baseline_model_revision="baseline-model-revision",
+    )
     registry.register_candidate(valid_candidate_manifest(candidate_id))
     return registry
 
 
 def approval():
     return HumanApproval(approved_by="operator", confirmed_at=now_utc())
+
+
+def test_promotion_rejects_missing_or_mismatched_initialized_baseline_identity(tmp_path):
+    registry = DistillModelRegistry(tmp_path / "registry.json")
+    registry.initialize_active("baseline-v1")
+    registry.register_candidate(valid_candidate_manifest("candidate-v2"))
+
+    with pytest.raises(PromotionError, match="baseline"):
+        registry.promote(
+            "candidate-v2",
+            report=eligible_report(),
+            approval=approval(),
+        )
+
+    registry = DistillModelRegistry(tmp_path / "registry-matched.json")
+    registry.initialize_active(
+        "baseline-v1",
+        baseline_model_id="baseline-model",
+        baseline_model_revision="baseline-model-revision",
+    )
+    registry.register_candidate(valid_candidate_manifest("candidate-v2"))
+    mismatched = eligible_report().model_copy(
+        update={
+            "metadata": eligible_report().metadata.model_copy(
+                update={"baseline_model_revision": "different-baseline-revision"}
+            ),
+            "baseline_score": eligible_report().baseline_score.model_copy(
+                update={"model_revision": "different-baseline-revision"}
+            ),
+        }
+    )
+
+    with pytest.raises(PromotionError, match="baseline"):
+        registry.promote("candidate-v2", report=mismatched, approval=approval())
+
+
+def test_promotion_accepts_matching_initialized_baseline_identity(tmp_path):
+    registry = DistillModelRegistry(tmp_path / "registry.json")
+    registry.initialize_active(
+        "baseline-v1",
+        baseline_model_id="baseline-model",
+        baseline_model_revision="baseline-model-revision",
+    )
+    registry.register_candidate(valid_candidate_manifest("candidate-v2"))
+
+    promoted = registry.promote(
+        "candidate-v2",
+        report=eligible_report(),
+        approval=approval(),
+    )
+
+    assert promoted.active_model == "candidate-v2"
+    assert registry.read().previous_model == "baseline-v1"
+
+
+def test_concurrent_candidate_registrations_preserve_both_during_race(tmp_path, monkeypatch):
+    import threading
+
+    registry = DistillModelRegistry(tmp_path / "registry.json")
+    barrier = threading.Barrier(2)
+    original = DistillModelRegistry.register_candidate
+
+    def synchronized_register(self, manifest):
+        barrier.wait()
+        return original(self, manifest)
+
+    monkeypatch.setattr(DistillModelRegistry, "register_candidate", synchronized_register)
+
+    threads = [
+        threading.Thread(target=lambda: registry.register_candidate(valid_candidate_manifest("candidate-v2"))),
+        threading.Thread(target=lambda: registry.register_candidate(valid_candidate_manifest("candidate-v3"))),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    stored = registry.read()
+    assert set(stored.candidates) == {"candidate-v2", "candidate-v3"}
 
 
 def test_promotion_requires_benchmark_eligibility_and_approval(tmp_path):

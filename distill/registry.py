@@ -4,9 +4,20 @@ import json
 import os
 import re
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback below
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX only
+    msvcrt = None
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -53,6 +64,8 @@ class RegistryState(BaseModel):
     active_model: str | None = None
     previous_model: str | None = None
     initial_model: str | None = None
+    initialized_baseline_model_id: str | None = None
+    initialized_baseline_revision: str | None = None
     installed_models: list[str] = Field(default_factory=list)
     candidates: dict[str, CandidateManifest] = Field(default_factory=dict)
     promoted_at: datetime | None = None
@@ -68,6 +81,12 @@ class RegistryState(BaseModel):
             or self.initial_model not in self.installed_models
         ):
             raise ValueError("initial model must be a valid installed tag")
+        if self.initialized_baseline_model_id is not None and not self.initialized_baseline_model_id.strip():
+            raise ValueError("initialized baseline model ID must not be empty")
+        if self.initialized_baseline_revision is not None and not self.initialized_baseline_revision.strip():
+            raise ValueError("initialized baseline revision must not be empty")
+        if (self.initialized_baseline_model_id is None) != (self.initialized_baseline_revision is None):
+            raise ValueError("initialized baseline model ID and revision must be provided together")
         for tag in (self.active_model, self.previous_model):
             if tag is not None and tag not in self.installed_models:
                 raise ValueError("active and previous models must be installed")
@@ -107,40 +126,57 @@ class DistillModelRegistry:
         if not _is_valid_candidate_id(candidate.candidate_id):
             raise RegistryError("candidate ID is invalid")
 
-        state = self.read()
-        existing = state.candidates.get(candidate.candidate_id)
-        if existing is not None:
-            if existing.model_dump(mode="json") == candidate.model_dump(mode="json"):
-                return
-            raise RegistryError("candidate ID is already registered with different metadata")
+        with self._locked_registry():
+            state = self.read()
+            existing = state.candidates.get(candidate.candidate_id)
+            if existing is not None:
+                if existing.model_dump(mode="json") == candidate.model_dump(mode="json"):
+                    return
+                raise RegistryError("candidate ID is already registered with different metadata")
 
-        candidates = dict(state.candidates)
-        candidates[candidate.candidate_id] = candidate
-        installed_models = [*state.installed_models, candidate.candidate_id]
-        self._write(
-            state.model_copy(
-                update={"candidates": candidates, "installed_models": installed_models}
+            candidates = dict(state.candidates)
+            candidates[candidate.candidate_id] = candidate
+            installed_models = list(state.installed_models)
+            if candidate.candidate_id not in installed_models:
+                installed_models.append(candidate.candidate_id)
+            self._write(
+                state.model_copy(
+                    update={"candidates": candidates, "installed_models": installed_models}
+                )
             )
-        )
 
-    def initialize_active(self, model_tag: str) -> None:
+    def initialize_active(
+        self,
+        model_tag: str,
+        baseline_model_id: str | None = None,
+        baseline_model_revision: str | None = None,
+    ) -> None:
         if not _is_valid_model_tag(model_tag):
             raise RegistryError("active model tag is invalid")
-        state = self.read()
-        if state.active_model is not None or state.initial_model is not None:
-            raise RegistryError("active model is already initialized")
-        installed_models = list(state.installed_models)
-        if model_tag not in installed_models:
-            installed_models.append(model_tag)
-        self._write(
-            state.model_copy(
-                update={
-                    "active_model": model_tag,
-                    "initial_model": model_tag,
-                    "installed_models": installed_models,
-                }
+        if baseline_model_id is not None and not baseline_model_id.strip():
+            raise RegistryError("baseline model ID is invalid")
+        if baseline_model_revision is not None and not baseline_model_revision.strip():
+            raise RegistryError("baseline model revision is invalid")
+        if (baseline_model_id is None) != (baseline_model_revision is None):
+            raise RegistryError("baseline model ID and revision must be provided together")
+        with self._locked_registry():
+            state = self.read()
+            if state.active_model is not None or state.initial_model is not None:
+                raise RegistryError("active model is already initialized")
+            installed_models = list(state.installed_models)
+            if model_tag not in installed_models:
+                installed_models.append(model_tag)
+            self._write(
+                state.model_copy(
+                    update={
+                        "active_model": model_tag,
+                        "initial_model": model_tag,
+                        "initialized_baseline_model_id": baseline_model_id,
+                        "initialized_baseline_revision": baseline_model_revision,
+                        "installed_models": installed_models,
+                    }
+                )
             )
-        )
 
     def read(self) -> RegistryState:
         if not self.path.exists():
@@ -172,55 +208,70 @@ class DistillModelRegistry:
         except Exception as error:
             raise PromotionError("benchmark report or human approval is invalid") from error
 
-        state = self.read()
-        manifest = state.candidates.get(candidate_id)
-        if manifest is None:
-            raise PromotionError("candidate is not registered")
-        if state.active_model is None:
-            raise PromotionError("registry has no active model")
-        if not validated_report.eligible_for_promotion:
-            raise PromotionError("benchmark report is not eligible for promotion")
-        metadata = validated_report.metadata
-        if (
-            not metadata.complete
-            or metadata.benchmark_id != manifest.benchmark_id
-            or metadata.candidate_model_id != manifest.model_id
-            or metadata.candidate_model_revision != manifest.model_revision
-            or metadata.dataset_hash != manifest.dataset_hash
-            or validated_report.candidate_score.model_id != manifest.model_id
-            or validated_report.candidate_score.model_revision != manifest.model_revision
-        ):
-            raise PromotionError("benchmark report metadata does not match the candidate")
+        with self._locked_registry():
+            state = self.read()
+            manifest = state.candidates.get(candidate_id)
+            if manifest is None:
+                raise PromotionError("candidate is not registered")
+            if state.active_model is None:
+                raise PromotionError("registry has no active model")
+            if not validated_report.eligible_for_promotion:
+                raise PromotionError("benchmark report is not eligible for promotion")
+            metadata = validated_report.metadata
+            if (
+                not metadata.complete
+                or metadata.benchmark_id != manifest.benchmark_id
+                or metadata.candidate_model_id != manifest.model_id
+                or metadata.candidate_model_revision != manifest.model_revision
+                or metadata.dataset_hash != manifest.dataset_hash
+                or validated_report.candidate_score.model_id != manifest.model_id
+                or validated_report.candidate_score.model_revision != manifest.model_revision
+            ):
+                raise PromotionError("benchmark report metadata does not match the candidate")
 
-        active_manifest = state.candidates.get(state.active_model)
-        if active_manifest is not None and (
-            metadata.baseline_model_id != active_manifest.model_id
-            or metadata.baseline_model_revision != active_manifest.model_revision
-        ):
-            raise PromotionError("benchmark baseline metadata does not match the active model")
+            active_manifest = state.candidates.get(state.active_model)
+            if active_manifest is not None:
+                if (
+                    metadata.baseline_model_id != active_manifest.model_id
+                    or metadata.baseline_model_revision != active_manifest.model_revision
+                ):
+                    raise PromotionError("benchmark baseline metadata does not match the active model")
+            else:
+                if (
+                    state.initialized_baseline_model_id is None
+                    or state.initialized_baseline_revision is None
+                    or metadata.baseline_model_id is None
+                    or metadata.baseline_model_revision is None
+                    or metadata.baseline_model_id != state.initialized_baseline_model_id
+                    or metadata.baseline_model_revision != state.initialized_baseline_revision
+                ):
+                    raise PromotionError(
+                        "benchmark baseline metadata does not match the initialized baseline"
+                    )
 
-        updated = state.model_copy(
-            update={
-                "active_model": candidate_id,
-                "previous_model": state.active_model,
-                "promoted_at": validated_approval.confirmed_at,
-            }
-        )
-        self._write(updated)
-        return updated.model_copy(deep=True)
+            updated = state.model_copy(
+                update={
+                    "active_model": candidate_id,
+                    "previous_model": state.active_model,
+                    "promoted_at": validated_approval.confirmed_at,
+                }
+            )
+            self._write(updated)
+            return updated.model_copy(deep=True)
 
     def rollback(self) -> RegistryState:
-        state = self.read()
-        if state.active_model is None or state.previous_model is None:
-            raise RegistryError("there is no previous model to restore")
-        updated = state.model_copy(
-            update={
-                "active_model": state.previous_model,
-                "previous_model": state.active_model,
-            }
-        )
-        self._write(updated)
-        return updated.model_copy(deep=True)
+        with self._locked_registry():
+            state = self.read()
+            if state.active_model is None or state.previous_model is None:
+                raise RegistryError("there is no previous model to restore")
+            updated = state.model_copy(
+                update={
+                    "active_model": state.previous_model,
+                    "previous_model": state.active_model,
+                }
+            )
+            self._write(updated)
+            return updated.model_copy(deep=True)
 
     def resolve_active_model_name(self, alias: str) -> str:
         if alias != "tuminh-active":
@@ -229,6 +280,29 @@ class DistillModelRegistry:
         if state.active_model is None or state.active_model not in state.installed_models:
             raise RegistryError("active model is not installed")
         return state.active_model
+
+    @contextmanager
+    def _locked_registry(self):
+        lock_path = self.path.with_name(f"{self.path.name}.lock")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if fcntl is not None:
+            with open(lock_path, "a+b") as stream:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            return
+        if msvcrt is not None:
+            with open(lock_path, "a+b") as stream:
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            return
+        yield
 
     def _write(self, state: RegistryState) -> None:
         try:
