@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 memory/reflection.json
 memory/task_state.json
+*.egg-info/

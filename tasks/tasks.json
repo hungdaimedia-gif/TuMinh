@@ -1,0 +1,13 @@
+[
+  {
+    "id": "starter-inspect",
+    "title": "Inspect the starter configuration",
+    "description": "Inspect the agent configuration and report its configured execution-step limit. Do not modify files.",
+    "acceptance_criteria": [
+      "The response reports the configured maximum execution steps.",
+      "No files are modified."
+    ],
+    "source": "local",
+    "state": "pending"
+  }
+]
