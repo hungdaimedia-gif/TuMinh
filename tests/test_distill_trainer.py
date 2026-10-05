@@ -1,3 +1,4 @@
+import subprocess
 import hashlib
 import json
 
@@ -7,6 +8,7 @@ from pydantic import ValidationError
 from distill.schema import TrainingRow
 from distill.trainer import (
     TrainingConfig,
+    TrainingConfigError,
     TrainingDatasetError,
     TrainingEnvironmentError,
     TrainingError,
@@ -43,6 +45,17 @@ def make_trainer(tmp_path, backend, peak_vram=123456):
         candidate_root=tmp_path / "candidates",
         hardware_probe=FixedHardwareProbe(peak_vram),
     )
+
+
+def make_git_repo(tmp_path, *, ignored=False):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+    candidate_root = repo / "distill" / "models" / "candidates"
+    candidate_root.mkdir(parents=True, exist_ok=True)
+    if ignored:
+        (repo / ".gitignore").write_text("distill/models/candidates/\n", encoding="utf-8")
+    return repo, candidate_root
 
 
 def test_training_config_rejects_invalid_bounds_and_missing_metadata(tmp_path):
@@ -228,6 +241,37 @@ def test_trainer_rejects_outputs_outside_candidate_root(tmp_path):
 
     assert backend.invocations == 0
     assert not (tmp_path / "outside").exists()
+
+
+def test_trainer_rejects_unignored_repo_candidate_root(tmp_path):
+    repo, candidate_root = make_git_repo(tmp_path, ignored=False)
+    trainer = Trainer(
+        backend=FakeTrainingBackend(cuda_available=True),
+        candidate_root=candidate_root,
+        hardware_probe=FixedHardwareProbe(123456),
+    )
+    target = candidate_root / "candidate-unignored"
+
+    with pytest.raises(TrainingConfigError, match="ignored"):
+        trainer._validate_output_path(target)
+
+    assert target.parent == candidate_root
+    assert not (repo / ".gitignore").exists()
+
+
+def test_trainer_accepts_gitignored_repo_candidate_root(tmp_path):
+    repo, candidate_root = make_git_repo(tmp_path, ignored=True)
+    trainer = Trainer(
+        backend=FakeTrainingBackend(cuda_available=True),
+        candidate_root=candidate_root,
+        hardware_probe=FixedHardwareProbe(123456),
+    )
+    target = candidate_root / "candidate-ignored"
+
+    validated = trainer._validate_output_path(target)
+
+    assert validated == target
+    assert (repo / ".gitignore").read_text(encoding="utf-8") == "distill/models/candidates/\n"
 
 
 def test_rtx_3060_ti_profile_rejects_aggressive_settings(tmp_path):

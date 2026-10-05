@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -424,6 +425,64 @@ class Trainer:
                 "install the optional training stack and use a compatible GPU"
             )
 
+    @staticmethod
+    def _find_git_root(path: Path) -> Path | None:
+        probe = path.resolve(strict=False)
+        for candidate in [probe, *probe.parents]:
+            if not candidate.exists():
+                continue
+            try:
+                result = subprocess.run(
+                    ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except OSError:
+                continue
+            if result.returncode == 0:
+                root = result.stdout.strip()
+                if root:
+                    return Path(root).resolve(strict=False)
+        return None
+
+    @staticmethod
+    def _require_git_ignored(target: Path, repo_root: Path) -> None:
+        try:
+            relative_target = target.resolve(strict=False).relative_to(repo_root.resolve(strict=False)).as_posix()
+        except ValueError as error:
+            raise TrainingConfigError(
+                "Candidate output must remain inside the repository before ignore checks"
+            ) from error
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo_root),
+                    "check-ignore",
+                    "--quiet",
+                    "--no-index",
+                    str(relative_target),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as error:
+            raise TrainingConfigError(
+                "Could not verify candidate output path is gitignored; refusing to write under repo paths"
+            ) from error
+        if result.returncode == 0:
+            return
+        if result.returncode == 1:
+            raise TrainingConfigError(
+                "Candidate output path must be gitignored inside the repository before training can write artifacts"
+            )
+        raise TrainingConfigError(
+            "Could not verify candidate output path is gitignored; refusing to write under repo paths"
+        )
+
     def _validate_output_path(self, output_path: Path) -> Path:
         configured_path = Path(output_path)
         if configured_path.name in {"", ".", ".."} or not self._CANDIDATE_ID.fullmatch(
@@ -451,6 +510,9 @@ class Trainer:
                 raise TrainingConfigError("Candidate output path must not traverse a symlink")
         if target.exists():
             raise TrainingConfigError(f"Candidate output already exists: {target}")
+        repo_root = self._find_git_root(root)
+        if repo_root is not None:
+            self._require_git_ignored(target, repo_root)
         return target
 
     @staticmethod
