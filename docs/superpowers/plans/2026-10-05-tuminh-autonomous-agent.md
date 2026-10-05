@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a runnable Python starter that accepts local or GitHub tasks, plans and performs bounded code changes, verifies them, records reflections, and prepares a branch/optional pull request.
+**Goal:** Build a runnable Python starter that accepts local or GitHub tasks, executes bounded verified changes, records reflections and sanitized local trajectories, and prepares a branch/optional pull request.
 
-**Architecture:** Use a single-process Python 3.11+ application with typed Pydantic domain models, a provider-neutral model protocol backed by an OpenAI-compatible client, and a bounded orchestrator that can invoke only registered tools. Keep queue, filesystem, command execution, Git/GitHub, reflection, and skill proposals behind separate modules; require verification and a dedicated branch before any commit.
+**Architecture:** Use a single-process Python 3.11+ application with typed Pydantic domain models, a provider-neutral model protocol backed by an OpenAI-compatible client, and a bounded orchestrator that can invoke only registered tools. Keep queue, filesystem, command execution, Git/GitHub, reflection, and trajectory journaling behind separate modules; require verification and a dedicated branch before any commit. Local model training and promotion belong to the separate distillation plan.
 
-**Tech Stack:** Python 3.11+, OpenAI Python SDK (configurable `base_url`), Pydantic 2, python-dotenv, pytest.
+**Tech Stack:** Python 3.11+, OpenAI Python SDK (configurable `base_url`), Pydantic 2, python-dotenv, pytest; distillation training dependencies are excluded from runtime installation.
 
 **Spec:** `docs/superpowers/specs/2026-10-05-tuminh-autonomous-agent-design.md`
 
@@ -17,6 +17,8 @@
 - Run changes only on a dedicated working branch. Never merge automatically.
 - Bound execution by configurable step, retry, and subprocess time limits.
 - Treat learned skills/rules as proposals. Require an evaluation and human approval before loading a proposal into active behavior.
+- Record only observable task/runtime events for future learning; never record hidden chain-of-thought, system prompts, or credentials.
+- Keep trajectory logs local and runtime-only. No automatic upload, training, or inclusion in Git commits.
 - Do not expose an unrestricted shell tool.
 - These application-level restrictions reduce accidental damage but are not an OS security sandbox.
 - Local queue operation must not require an API token for GitHub.
@@ -42,6 +44,7 @@
 | `agent/orchestrator.py` | Bounded Plan → tool → verify → correct → result loop |
 | `agent/verifier.py` | Execute only allowlisted plan verification commands |
 | `agent/reflection.py` | Persist outcome reflections and inert skill/rule proposals |
+| `agent/trajectory.py` | Append redacted, schema-validated task events to local JSONL |
 | `agent/self_eval.py` | Detect agent-source edits and require test/eval success before commit |
 | `agent/github_source.py` | Normalize GitHub Issues through the optional `gh` integration |
 | `tools/workspace.py` | Workspace-contained file read/write/list operations |
@@ -52,6 +55,7 @@
 | `tasks/tasks.json` | Example local queue |
 | `memory/.gitkeep` | Track the directory where runtime reflections are stored |
 | `memory/task_state.json` | Runtime-only task completion state, separate from the tracked queue |
+| `memory/trajectories/` | Ignored per-task JSONL event journal, never uploaded automatically |
 | `skills/approved/README.md` | Active-skill policy and approval contract |
 | `skills/proposals/.gitkeep` | Location for inert, unapproved generated proposals |
 | `evals/cases.json` | Deterministic expected behavior and safety cases |
@@ -74,6 +78,7 @@
 
 **Interfaces:**
 - `Settings.from_env(environ: Mapping[str, str] | None = None) -> Settings`; `TASK_SOURCE` defaults to `local`
+- `Settings.model_name` is passed through unchanged unless it equals `tuminh-active`
 - `Task`: `id`, `title`, `description`, `acceptance_criteria`, `source`, `state`
 - `Subtask`: `id`, `description`, `files`, `verification`
 - `TaskPlan`: `task_id`, ordered `subtasks`, `verification_commands`
@@ -131,6 +136,7 @@ git commit -m "feat: add TuMinh agent contracts and config"
 - Create: `agent/planner.py`
 - Create: `tasks/tasks.json`
 - Create: `tests/test_task_queue.py`
+- Create: `tests/test_model_client.py`
 - Create: `tests/test_planner.py`
 - Create: `tests/fakes.py`
 
@@ -138,12 +144,16 @@ git commit -m "feat: add TuMinh agent contracts and config"
 - `TaskQueue(queue_path: Path, state_path: Path).next_task() -> Task | None`; never auto-select succeeded or failed tasks
 - `TaskQueue(queue_path: Path, state_path: Path).save_result(task_id: str, result: TaskResult) -> None`
 - `ModelClient.complete_json(self, system_prompt: str, user_payload: str, response_type: type[TModel]) -> TModel`
+- `ModelNameResolver.resolve(model_name: str) -> str`; injected only when resolving `tuminh-active`
+- `OpenAICompatibleModelClient(settings: Settings, model_name_resolver: ModelNameResolver | None = None).complete_json(system_prompt: str, user_payload: str, response_type: type[TModel]) -> TModel`
+- `ModelConfigurationError` when a `tuminh-active` model name is configured without a resolver
+- `resolve_model_name(configured_name: str, resolver: ModelNameResolver | None) -> str`
 - `Planner(model: ModelClient).create_plan(task: Task) -> TaskPlan`
 - `tests/fakes.py` defines `ScriptedModel.complete_json`, `FakePlanner.create_plan`, `FakeVerifier.verify`, `FakeReflectionStore.append`, and `FakeToolRegistry.execute`; `ScriptedModel.call_count` increments once per response.
 
 - [ ] **Step 1: Write queue and planner tests**
 
-Test that a task is normalized to `Task`, succeeded and failed outcomes in `memory/task_state.json` prevent re-selection without mutating tracked `tasks/tasks.json`, malformed JSON raises a visible `TaskQueueError`, runtime-state writes are atomic, and a fake model's invalid plan JSON raises a validation error. Assert planner prompts label task descriptions as untrusted data. Create the five fakes listed in the interface block in `tests/fakes.py`; make the scripted model consume responses in order and raise `AssertionError` if a test requests more responses than supplied.
+Test that a task is normalized to `Task`, succeeded and failed outcomes in `memory/task_state.json` prevent re-selection without mutating tracked `tasks/tasks.json`, malformed JSON raises a visible `TaskQueueError`, runtime-state writes are atomic, and a fake model's invalid plan JSON raises a validation error. Assert planner prompts label task descriptions as untrusted data. Test `resolve_model_name` passes ordinary model names unchanged and requires a resolver for `tuminh-active`. Create the five fakes listed in the interface block in `tests/fakes.py`; make the scripted model consume responses in order and raise `AssertionError` if a test requests more responses than supplied.
 
 ```python
 def test_completed_task_is_skipped_without_mutating_queue(tmp_path):
@@ -167,16 +177,16 @@ def test_completed_task_is_skipped_without_mutating_queue(tmp_path):
 
 - [ ] **Step 2: Run focused tests and confirm they fail**
 
-Run: `python -m pytest tests/test_task_queue.py tests/test_planner.py -q`
+Run: `python -m pytest tests/test_task_queue.py tests/test_model_client.py tests/test_planner.py -q`
 Expected: FAIL because the queue, model protocol, and planner modules do not exist.
 
 - [ ] **Step 3: Implement normalized task loading and planning**
 
-Validate every task with `Task.model_validate`; keep the sample queue immutable and write succeeded/failed state to the ignored `memory/task_state.json` through a temporary file followed by atomic replacement. Do not automatically retry a failed queue item; document resetting its runtime state to requeue it. Define `TModel = TypeVar("TModel", bound=BaseModel)` and a `Protocol` method `complete_json(self, system_prompt: str, user_payload: str, response_type: type[TModel]) -> TModel`; implement the live adapter with `OpenAI(base_url=settings.model_base_url, api_key=settings.model_api_key)`, Chat Completions JSON output, and `response_type.model_validate_json`. Use explicit system policy separate from untrusted task payload.
+Validate every task with `Task.model_validate`; keep the sample queue immutable and write succeeded/failed state to the ignored `memory/task_state.json` through a temporary file followed by atomic replacement. Do not automatically retry a failed queue item; document resetting its runtime state to requeue it. Define `TModel = TypeVar("TModel", bound=BaseModel)` and a `Protocol` method `complete_json(self, system_prompt: str, user_payload: str, response_type: type[TModel]) -> TModel`; implement the live adapter with `OpenAI(base_url=settings.model_base_url, api_key=settings.model_api_key)`, Chat Completions JSON output, and `response_type.model_validate_json`. For `MODEL_NAME=tuminh-active`, require an injected `ModelNameResolver` and resolve once at client construction; without a resolver, raise `ModelConfigurationError`. For all other configured names, use the name verbatim. Use explicit system policy separate from untrusted task payload.
 
 - [ ] **Step 4: Run focused tests, including malformed model output**
 
-Run: `python -m pytest tests/test_task_queue.py tests/test_planner.py -q`
+Run: `python -m pytest tests/test_task_queue.py tests/test_model_client.py tests/test_planner.py -q`
 Expected: PASS; malformed queue/model output must raise typed errors rather than produce an empty task or plan.
 
 - [ ] **Step 5: Commit**
@@ -352,7 +362,7 @@ Expected: FAIL because the reflection store does not exist.
 
 - [ ] **Step 3: Implement validated append-only reflections and inert proposals**
 
-Write reflections to `memory/reflection.json` through atomic replacement and validate every stored item; create the file on first append. Sanitize constructor-supplied secret values before persistence. Restrict slugs to safe filenames, reject proposal paths outside the proposals directory, and copy approved content into the active directory only through `activate_proposal` after both gates pass. Do not expose proposal activation as an agent tool; require the separate human-facing CLI command in Task 8.
+Write reflections to `memory/reflection.json` through atomic replacement and validate every stored item; create the file on first append. Sanitize constructor-supplied secret values before persistence. Restrict slugs to safe filenames, reject proposal paths outside the proposals directory, and copy approved content into the active directory only through `activate_proposal` after both gates pass. Do not expose proposal activation as an agent tool; require the separate human-facing CLI command in Task 9.
 
 - [ ] **Step 4: Run focused tests, including activation denials**
 
@@ -431,6 +441,7 @@ git commit -m "test: add offline agent self-evaluation"
 **Interfaces:**
 - `GitOperations.ensure_task_branch(task_id: str) -> str`
 - `GitOperations.changed_files() -> list[str]`
+- `GitOperations.diff_text() -> str` returns only the current task branch diff for local trajectory recording
 - `GitOperations.commit_verified(task_id: str, message: str, *, task_verification: VerificationResult, self_evaluator: SelfEvaluator) -> str`
 - `GitOperations(workspace: Path, command_runner: CommandRunner)`
 - The orchestrator may commit only after task verification succeeds.
@@ -461,7 +472,7 @@ Expected: FAIL because `tools.git_ops` does not exist.
 
 - [ ] **Step 3: Implement branch and verified-commit flow**
 
-Create/switch to a task branch before file-writing tools are enabled. Inspect branch/status/diff using fixed Git argv calls. Before a commit, require successful task verification and, if agent files changed, `SelfEvaluator.verify_before_commit` success. Do not use `git add .`; stage only validated paths from the task's change set. Refuse to commit pre-existing unrelated changes.
+Create/switch to a task branch before file-writing tools are enabled. Inspect branch/status/diff using fixed Git argv calls; implement `diff_text()` so it returns only that branch's current diff. Before a commit, require successful task verification and, if agent files changed, `SelfEvaluator.verify_before_commit` success. Do not use `git add .`; stage only validated paths from the task's change set. Refuse to commit pre-existing unrelated changes.
 
 - [ ] **Step 4: Run Git tests and verify failure never stages/commits**
 
@@ -475,7 +486,58 @@ git add tools/git_ops.py agent/orchestrator.py tests
 git commit -m "feat: gate commits on branch and verification"
 ```
 
-## Task 8: Add optional GitHub Issues/PR adapter and runnable CLI
+## Task 8: Add the sanitized trajectory journal
+
+**Files:**
+- Create: `agent/trajectory.py`
+- Create: `tests/test_trajectory.py`
+- Modify: `agent/orchestrator.py`
+- Modify: `tools/git_ops.py`
+- Modify: `.gitignore`
+
+**Interfaces:**
+- `TrajectoryEvent`: schema version, task ID, sequence number, event type, timestamp, and JSON data
+- `TrajectoryJournal(root: Path, secret_values: Sequence[str]).append(task_id: str, event_type: str, data: Mapping[str, object]) -> None`
+- `TrajectoryJournal.read(task_id: str) -> list[TrajectoryEvent]`
+- `TrajectoryJournal.path_for_task(task_id: str) -> Path`
+- Event types: `task`, `plan`, `decision`, `tool_call`, `tool_result`, `patch`, `verification`, `reflection`
+- `GitOperations.diff_text() -> str` exposes the task branch diff to the injected journal redactor.
+
+- [ ] **Step 1: Write journal validation, redaction, and ordering tests**
+
+Assert append/read preserves sequence order in `memory/trajectories/<safe-task-id>.jsonl`; configured secrets are redacted in nested strings; traversal IDs, unknown event types, nested `thought`/`thinking`/`analysis`/system-prompt fields, and malformed prior JSONL raise `TrajectoryError`. Assert a patch event stores only redacted diff text and files remain under a temporary journal root.
+
+```python
+def test_trajectory_redacts_secret_before_jsonl_write(tmp_path):
+    journal = TrajectoryJournal(tmp_path / "memory" / "trajectories", ["private-token"])
+    journal.append("task-1", "tool_result", {"result": {"stdout": "token=private-token"}})
+
+    record = json.loads(journal.path_for_task("task-1").read_text())
+    assert "private-token" not in json.dumps(record)
+```
+
+- [ ] **Step 2: Run focused tests and confirm they fail**
+
+Run: `python -m pytest tests/test_trajectory.py -q`
+Expected: FAIL because `agent.trajectory` and `GitOperations.diff_text` do not exist.
+
+- [ ] **Step 3: Implement append-only events and wire the orchestrator**
+
+Validate every event before appending one JSON object per line. Recursively reject prohibited reasoning/prompt fields, redact configured secrets, bound result/diff payload size, and sanitize task IDs before deriving file paths. Ignore `memory/trajectories/*.jsonl` in Git. Inject the journal into the orchestrator and record task, generated plan, emitted decision, tool-call/result, diff, verification, and reflection events in order. Never pass model system prompts or hidden reasoning to the journal. Journal errors fail the task visibly and prevent a success-shaped result.
+
+- [ ] **Step 4: Run trajectory and orchestrator tests**
+
+Run: `python -m pytest tests/test_trajectory.py tests/test_orchestrator.py -q`
+Expected: PASS; tests verify event order, recursive redaction, prohibited-field rejection, and task failure on journal write errors.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add agent/trajectory.py agent/orchestrator.py tools/git_ops.py tests/test_trajectory.py .gitignore
+git commit -m "feat: record sanitized local task trajectories"
+```
+
+## Task 9: Add optional GitHub Issues/PR adapter and runnable CLI
 
 **Files:**
 - Create: `agent/github_source.py`
@@ -490,6 +552,7 @@ git commit -m "feat: gate commits on branch and verification"
 - `GitHubIssueSource.next_task() -> Task | None`; use normalized ID `github:<number>` and the same runtime completion state to avoid replaying processed issues
 - `GitHubOperations.create_pull_request(branch: str, title: str, body: str) -> str`
 - `main(argv: Sequence[str] | None = None) -> int`
+- `ModelNameResolver.resolve(model_name: str) -> str` resolves the `tuminh-active` sentinel from the local distillation registry.
 - CLI flags: `--once` (default) and `--poll`; polling interval must be positive and bounded.
 - Add an explicit `approve-skill-proposal` subcommand that displays the proposal and prompts before creating `HumanApproval`; no agent tool can call this flow.
 - `request_skill_approval(input_fn: Callable[[str], str] = input) -> HumanApproval | None` returns an approval only for an explicit affirmative response and records `getpass.getuser()` plus a UTC timestamp.
@@ -513,6 +576,8 @@ Expected: FAIL because GitHub adapter and CLI are missing.
 
 Call `load_dotenv()` before `Settings.from_env`. Select local queue by default and GitHub only when `TASK_SOURCE=github`. Use `["gh", "issue", "list", "--json", "number,title,body,labels,state"]` and `["gh", "pr", "create", "--title", title, "--body", body, "--head", branch]` only via fixed argv commands through the command runner. Parse JSON and validate issue data as untrusted task fields. `--once` returns nonzero for a failed task; `--poll` exits on fatal configuration/tool errors, stops at `MAX_POLL_CYCLES`, and reports each task result. The separate approval subcommand runs `evaluate_proposal(path)`, displays the candidate and eval result, reads an explicit affirmative response, creates `HumanApproval`, and only then calls `activate_proposal`.
 
+Before constructing the live model client, resolve `MODEL_NAME=tuminh-active` through the injected `ModelNameResolver`. If this sentinel is configured before the distillation phase is installed, raise a clear configuration error rather than sending the literal name to the endpoint.
+
 - [ ] **Step 4: Run queue-only and fake-GitHub tests**
 
 Run: `python -m pytest tests/test_github_source.py tests/test_cli.py -q`
@@ -525,7 +590,7 @@ git add main.py agent tools tests
 git commit -m "feat: add CLI and optional GitHub integration"
 ```
 
-## Task 9: Complete documentation and end-to-end offline verification
+## Task 10: Complete runtime documentation and end-to-end offline verification
 
 **Files:**
 - Create: `README.md`
@@ -562,7 +627,7 @@ Expected: FAIL until CLI/application wiring is complete.
 
 - [ ] **Step 3: Write setup and operation documentation**
 
-Give copyable PowerShell and POSIX setup commands, explain each required `.env` variable including `TASK_SOURCE`, show a valid queue item, distinguish local mode from optional GitHub mode, state that the tool restrictions are not an OS sandbox, explain failed-task reset via `memory/task_state.json`, and explain how proposals are reviewed/activated. Include expected CLI outcomes for success and failure.
+Give copyable PowerShell and POSIX setup commands, explain each required `.env` variable including `TASK_SOURCE`, show a valid queue item, distinguish local mode from optional GitHub mode, state that the tool restrictions are not an OS sandbox, explain failed-task reset via `memory/task_state.json`, explain how proposals are reviewed/activated, and document local trajectory retention plus the explicit export boundary to `docs/superpowers/plans/2026-10-05-tuminh-distillation.md`. Include expected CLI outcomes for success and failure.
 
 - [ ] **Step 4: Run offline verification after dependencies are installed**
 
@@ -588,3 +653,4 @@ git commit -m "docs: document TuMinh agent setup and operation"
 - [ ] A task failure or agent self-test failure blocks commit and PR creation.
 - [ ] Agent changes are made on a task branch; no operation merges automatically.
 - [ ] Skill/rule proposals remain inactive until eval passes and a human approves.
+- [ ] Runtime trajectories are JSONL, redacted, ignored by Git, and never uploaded or trained automatically.
