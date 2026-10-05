@@ -93,7 +93,7 @@
       "No unrelated files are modified."
     ],
     "source": "local",
-    "state": "pending"
+    "state": "succeeded"
   },
   {
     "id": "workspace-list-files-pattern-filter",
