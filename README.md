@@ -230,15 +230,31 @@ python -m distill.cli export-runtime `
   --output distill/data/raw/task-123.jsonl
 ```
 
-External import requires explicit authorization metadata; it validates the
-observable schema and rejects hidden reasoning fields and credentials:
+External import implements the provider-neutral TADP/1 (TuMinh Agent Distillation
+Protocol v1) contract. A valid file starts with a schema-version-1 header
+followed by ordered, timezone-aware events. Permitted external event types are
+`task`, `verification`, `user_message`, `assistant_message`, and `tool_message`;
+hidden reasoning, system/developer prompts, credentials, and unknown fields are
+rejected.
+
+`--source-name` identifies the agent/provider (e.g. `claude`, `antigravity`,
+`deepseek`); `--source-model-id` and `--source-model-revision` are optional
+metadata, and specifying a revision requires a model ID. Provider exports must be
+explicitly supplied or locally converted; TuMinh never scrapes provider sessions,
+and importing does not upload, execute content, curate, or initiate training
+automatically. The importer strictly bounds resource usage to 64 MiB per source
+file, 1,000 events per trajectory, and 64 KiB per encoded event. The existing
+`curate` command remains the gatekeeper that admits only trajectories with a
+successful outcome, passing verification, and passing evaluation:
 
 ```powershell
 python -m distill.cli import-external .\authorized-export.jsonl `
-  --source-name approved-source `
+  --source-name claude `
+  --source-model-id provider/model `
+  --source-model-revision pinned-revision `
   --license-or-authorization "Authorized for local fine-tuning under license X" `
-  --authorized-by "operator@example.test" `
-  --output distill/data/raw/authorized-source.jsonl
+  --authorized-by "operator" `
+  --output distill/data/raw/claude-export.jsonl
 ```
 
 Curate one or more validated trajectory exports. The configured
