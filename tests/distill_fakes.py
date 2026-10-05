@@ -15,10 +15,50 @@ from distill.schema import (
     ObservableEvent,
     TrajectoryExport,
 )
+from distill.trainer import TrainingConfig
 
 
 def now_utc():
     return datetime.now(UTC)
+
+
+def valid_training_config(output_root: Path) -> TrainingConfig:
+    return TrainingConfig(
+        model_id="synthetic/model",
+        model_revision="synthetic-revision-sha",
+        license_or_authorization="Authorized synthetic test model",
+        quantization="4bit",
+        sequence_length=1024,
+        batch_size=1,
+        gradient_accumulation_steps=8,
+        lora_rank=8,
+        output_path=Path(output_root) / "candidates" / "candidate-synthetic-1",
+        hardware_profile=None,
+    )
+
+
+class FakeTrainingBackend:
+    def __init__(self, cuda_available: bool, failure: Exception | None = None):
+        self.cuda_available = cuda_available
+        self.failure = failure
+        self.invocations = 0
+        self.dataset_paths: list[Path] = []
+
+    def train(self, dataset_path: Path, config: TrainingConfig) -> dict[str, object]:
+        self.invocations += 1
+        self.dataset_paths.append(dataset_path)
+        if self.failure is not None:
+            raise self.failure
+        config.output_path.mkdir(parents=True, exist_ok=True)
+        (config.output_path / "adapter-config.json").write_text(
+            json.dumps({"test_backend": True}),
+            encoding="utf-8",
+        )
+        return {
+            "backend": "synthetic-fake",
+            "training_completed": True,
+            "dataset_path": dataset_path.name,
+        }
 
 
 def valid_candidate_manifest(candidate_id: str) -> CandidateManifest:
