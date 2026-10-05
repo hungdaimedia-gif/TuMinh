@@ -50,6 +50,15 @@ class HardwareProbe(Protocol):
     def measure_peak_vram(self) -> int | None: ...
 
 
+# Attention-only projections match the QLoRA backend's historical default. MLP
+# projections are opt-in because they add meaningfully more adapter VRAM.
+_DEFAULT_LORA_TARGET_MODULES: tuple[str, ...] = ("q_proj", "k_proj", "v_proj", "o_proj")
+_MLP_LORA_TARGET_MODULES: frozenset[str] = frozenset({"gate_proj", "up_proj", "down_proj"})
+_SUPPORTED_LORA_TARGET_MODULES: frozenset[str] = (
+    frozenset(_DEFAULT_LORA_TARGET_MODULES) | _MLP_LORA_TARGET_MODULES
+)
+
+
 class TrainingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -61,6 +70,9 @@ class TrainingConfig(BaseModel):
     batch_size: StrictInt = Field(ge=1, le=128)
     gradient_accumulation_steps: StrictInt = Field(ge=1, le=1024)
     lora_rank: StrictInt = Field(ge=1, le=256)
+    num_train_epochs: StrictInt = Field(default=1, ge=1, le=100)
+    lora_alpha: StrictInt | None = Field(default=None, ge=1, le=512)
+    target_modules: tuple[str, ...] | None = None
     output_path: Path
     hardware_profile: str | None = None
 
@@ -73,6 +85,25 @@ class TrainingConfig(BaseModel):
                 f"unsupported hardware_profile {value!r}; supported: {', '.join(sorted(supported))}"
             )
         return value
+
+    @field_validator("target_modules")
+    @classmethod
+    def validate_target_modules(
+        cls, value: tuple[str, ...] | None
+    ) -> tuple[str, ...] | None:
+        if value is None:
+            return value
+        if not value:
+            raise ValueError("target_modules must not be empty when provided")
+        if len(set(value)) != len(value):
+            raise ValueError("target_modules must not contain duplicate entries")
+        unsupported = sorted(set(value) - _SUPPORTED_LORA_TARGET_MODULES)
+        if unsupported:
+            raise ValueError(
+                f"unsupported target_modules {unsupported}; supported: "
+                f"{', '.join(sorted(_SUPPORTED_LORA_TARGET_MODULES))}"
+            )
+        return tuple(value)
 
     @classmethod
     def from_toml(cls, path: Path) -> TrainingConfig:
@@ -93,6 +124,18 @@ class TrainingConfig(BaseModel):
             return cls.model_validate(settings)
         except (ValidationError, TypeError, ValueError) as error:
             raise TrainingConfigError("Training TOML settings are invalid") from error
+
+
+def resolve_lora_alpha(config: TrainingConfig) -> int:
+    """Return the configured lora_alpha, or the historical rank*2 default when unset."""
+
+    return config.lora_alpha if config.lora_alpha is not None else config.lora_rank * 2
+
+
+def resolve_target_modules(config: TrainingConfig) -> tuple[str, ...]:
+    """Return the configured target_modules, or the attention-only default when unset."""
+
+    return config.target_modules if config.target_modules is not None else _DEFAULT_LORA_TARGET_MODULES
 
 
 class OptionalTorchHardwareProbe:
@@ -175,11 +218,11 @@ class QLoRABackend:
             model,
             LoraConfig(
                 r=config.lora_rank,
-                lora_alpha=config.lora_rank * 2,
+                lora_alpha=resolve_lora_alpha(config),
                 lora_dropout=0.05,
                 bias="none",
                 task_type="CAUSAL_LM",
-                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                target_modules=list(resolve_target_modules(config)),
             ),
         )
         examples = [
@@ -207,7 +250,7 @@ class QLoRABackend:
             output_dir=str(config.output_path),
             per_device_train_batch_size=config.batch_size,
             gradient_accumulation_steps=config.gradient_accumulation_steps,
-            num_train_epochs=1,
+            num_train_epochs=config.num_train_epochs,
             learning_rate=2e-4,
             fp16=True,
             logging_strategy="epoch",
@@ -236,6 +279,7 @@ class Trainer:
     _CANDIDATE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
     _RTX_SEQUENCE_LIMIT = 2048
     _RTX_BATCH_LIMIT = 1
+    _RTX_MLP_LORA_RANK_LIMIT = 64
 
     def __init__(
         self,
@@ -401,13 +445,25 @@ class Trainer:
         return rows, dataset_bytes
 
     def _validate_hardware_profile(self, config: TrainingConfig) -> None:
-        if config.hardware_profile == "rtx_3060_ti_8gb" and (
+        if config.hardware_profile != "rtx_3060_ti_8gb":
+            return
+        if (
             config.sequence_length > self._RTX_SEQUENCE_LIMIT
             or config.batch_size > self._RTX_BATCH_LIMIT
         ):
             raise TrainingOutOfMemoryError(
                 "The rtx_3060_ti_8gb profile is conservative, not a VRAM guarantee; "
                 "use sequence_length <= 2048 and batch_size = 1, or adjust the profile"
+            )
+        target_modules = resolve_target_modules(config)
+        if (
+            set(target_modules) & _MLP_LORA_TARGET_MODULES
+            and config.lora_rank > self._RTX_MLP_LORA_RANK_LIMIT
+        ):
+            raise TrainingOutOfMemoryError(
+                "The rtx_3060_ti_8gb profile cannot fit lora_rank > 64 when MLP "
+                "target_modules (gate_proj/up_proj/down_proj) are included; lower "
+                "lora_rank or use attention-only target_modules"
             )
 
     def _require_cuda_if_needed(self, config: TrainingConfig) -> None:

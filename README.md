@@ -285,7 +285,27 @@ Copy and edit `distill/config.example.toml` first; use an authorized model
 license declaration, exact revision, and ignored candidate output path. The
 command prints the candidate manifest path. Its benchmark ID is reserved and
 remains pending: training neither benchmarks, deploys, nor promotes.
-`rtx_3060_ti_8gb` is an optional conservative profile, not a VRAM guarantee.
+
+Training configuration options in `distill/config.example.toml`:
+- `quantization`: `4bit` (required for 8GB VRAM profiles).
+- `sequence_length`: maximum sequence length (up to 2048 for RTX 3060 Ti).
+- `batch_size`: per-device batch size (1 for RTX 3060 Ti).
+- `gradient_accumulation_steps`: accumulation steps (e.g. 8 or 16).
+- `lora_rank`: rank dimension for LoRA adapter.
+- `num_train_epochs`: optional number of passes over dataset (defaults to 1).
+- `lora_alpha`: optional scaling factor (defaults to `lora_rank * 2`).
+- `target_modules`: optional list of projections. Defaults to attention-only
+  (`["q_proj", "k_proj", "v_proj", "o_proj"]`). MLP projections
+  (`"gate_proj"`, `"up_proj"`, `"down_proj"`) can be added for deeper adaptation.
+
+VRAM Guard enforcement:
+- `rtx_3060_ti_8gb` profile statically enforces `sequence_length <= 2048` and
+  `batch_size == 1`.
+- When MLP projections are included, the VRAM guard statically requires
+  `lora_rank <= 64` to prevent out-of-memory errors on 8GB VRAM cards.
+- See `docs/CHIEN_LUOC_HUAN_LUYEN_TUMINH_CLAUDE_SONNET.md` for the practical
+  distillation strategy and baseline recommendations.
+
 
 Deploy explicitly. Local llama.cpp conversion and Ollama are only invoked by
 this command; candidate registration occurs only after the deployment service

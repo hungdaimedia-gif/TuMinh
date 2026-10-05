@@ -9,5 +9,16 @@ sequence_length = 1024
 batch_size = 1
 gradient_accumulation_steps = 8
 lora_rank = 8
+# Optional: number of passes over the curated dataset. Defaults to 1 if omitted.
+num_train_epochs = 1
+# Optional: LoRA scaling factor. Defaults to lora_rank * 2 if omitted.
+lora_alpha = 16
+# Optional: adapter projections to train. Defaults to attention-only
+# ["q_proj", "k_proj", "v_proj", "o_proj"] if omitted. MLP projections
+# ("gate_proj", "up_proj", "down_proj") can be added for deeper adaptation, at
+# the cost of extra VRAM (roughly +1-1.5GB). On the rtx_3060_ti_8gb profile,
+# including MLP projections requires lora_rank <= 64 or training is rejected
+# by the VRAM guard.
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
 output_path = "models/candidates/candidate-example"
 hardware_profile = "rtx_3060_ti_8gb"
