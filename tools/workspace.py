@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from fnmatch import fnmatch
 from pathlib import Path
 
 
@@ -34,12 +35,16 @@ class Workspace:
         except (OSError, UnicodeError) as error:
             raise WorkspaceError(f"Could not write workspace file {path!r}: {error}") from error
 
-    def list_files(self, path: str = ".") -> list[str]:
+    def list_files(self, path: str = ".", pattern: str | None = None) -> list[str]:
+        """List files in the workspace, optionally filtering by a glob pattern."""
         target = self._resolve(path)
         if not target.exists():
             raise WorkspaceError(f"Workspace path does not exist: {path}")
         if target.is_file():
-            return [target.relative_to(self.root).as_posix()]
+            rel = target.relative_to(self.root).as_posix()
+            if pattern is not None and not fnmatch(rel, pattern):
+                return []
+            return [rel]
         if not target.is_dir():
             raise WorkspaceError(f"Workspace path is not a file or directory: {path}")
 
@@ -48,7 +53,9 @@ class Workspace:
             for child in target.rglob("*"):
                 resolved = self._resolve(str(child))
                 if resolved.is_file():
-                    files.append(resolved.relative_to(self.root).as_posix())
+                    rel = resolved.relative_to(self.root).as_posix()
+                    if pattern is None or fnmatch(rel, pattern):
+                        files.append(rel)
         except OSError as error:
             raise WorkspaceError(f"Could not list workspace path {path!r}: {error}") from error
         return sorted(set(files))

@@ -77,6 +77,7 @@ def build_orchestrator(
         settings=settings,
         verifier=verifier,
         reflections=reflection_store,
+        sleep_fn=lambda _: None,
     )
     return orchestrator, model, planner, tools, verifier, reflection_store
 
@@ -200,6 +201,9 @@ def test_repeated_verification_failure_stops_at_correction_limit():
 
 def test_tool_exception_fails_task_and_records_reflection():
     class BrokenTools:
+        def describe_tools(self):
+            return {}
+
         def execute(self, call):
             raise RuntimeError("tool unavailable")
 
@@ -442,3 +446,45 @@ def test_trajectory_failure_fails_task_instead_of_returning_success():
     assert result.status == "failed"
     assert "journal is unavailable" in result.error
     assert reflections.reflections[0].outcome == "failed"
+
+
+def test_orchestrator_includes_available_tools_in_decision_payload():
+    captured_payloads = []
+
+    class CapturingModel:
+        def __init__(self):
+            self.call_count = 0
+
+        def complete_json(self, system_prompt, user_payload, response_type):
+            self.call_count += 1
+            if response_type is TaskPlan:
+                return sample_plan()
+            captured_payloads.append(user_payload)
+            return AgentDecision(final_response="done")
+
+    import json
+    import tempfile
+
+    settings = Settings.from_env(
+        {"WORKSPACE_ROOT": tempfile.gettempdir(), "MAX_STEPS": "1"}
+    )
+    tools = FakeToolRegistry(
+        tool_descriptions={
+            "read_file": {"properties": {"path": {"type": "string"}}},
+            "write_file": {"properties": {"path": {"type": "string"}}},
+        }
+    )
+    orchestrator = Orchestrator(
+        planner=FakePlanner(sample_plan()),
+        model=CapturingModel(),
+        tools=tools,
+        settings=settings,
+        verifier=FakeVerifier(),
+        reflections=FakeReflectionStore(),
+    )
+
+    orchestrator.run(sample_task())
+
+    assert len(captured_payloads) == 1
+    payload = json.loads(captured_payloads[0])
+    assert set(payload["available_tools"].keys()) == {"read_file", "write_file"}

@@ -184,6 +184,25 @@ def main(
                 f"{result.curated_rows_removed} curated row(s) across "
                 f"{result.datasets_updated} dataset(s)"
             )
+        elif command == "list-candidates":
+            candidate_root = Path(arguments.candidate_root)
+            lines = []
+            if candidate_root.is_dir():
+                for entry in sorted(candidate_root.iterdir(), key=lambda path: path.name):
+                    if entry.is_dir():
+                        manifest_path = entry / "candidate-manifest.json"
+                        if manifest_path.is_file():
+                            manifest_data = json.loads(
+                                manifest_path.read_text(encoding="utf-8")
+                            )
+                            model_id = manifest_data.get("model_id")
+                            model_revision = manifest_data.get("model_revision")
+                            lines.append(f"{entry.name}: {model_id}@{model_revision}")
+            if lines:
+                for line in lines:
+                    print(line)
+            else:
+                print("No candidates found.")
         else:  # pragma: no cover - argparse choices and dispatch remain paired
             raise DistillationCommandError(f"Unsupported command: {command}")
     except Exception as error:
@@ -280,7 +299,15 @@ def _build_parser() -> argparse.ArgumentParser:
     purge.add_argument("--source-sha256", required=True)
     purge.add_argument("--raw-root", type=Path, required=True)
     purge.add_argument("--curated-root", type=Path, required=True)
+
+    list_candidates = commands.add_parser("list-candidates")
+    list_candidates.add_argument(
+        "--candidate-root",
+        type=Path,
+        default=Path("distill") / "models" / "candidates",
+    )
     return parser
+
 
 
 def _configured_secrets() -> tuple[str, ...]:

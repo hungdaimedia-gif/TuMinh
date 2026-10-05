@@ -8,6 +8,7 @@ from agent.config import Settings
 from agent.model_client import (
     ModelConfigurationError,
     OpenAICompatibleModelClient,
+    build_schema_instruction,
     resolve_model_name,
 )
 from agent.models import TaskPlan
@@ -81,10 +82,50 @@ def test_client_requests_json_and_validates_response(monkeypatch):
     assert plan.task_id == "t1"
     assert calls[0]["response_format"] == {"type": "json_object"}
     assert calls[0]["model"] == "test-model"
-    assert calls[0]["messages"] == [
-        {"role": "system", "content": "policy"},
-        {"role": "user", "content": '{"task_id":"t1"}'},
-    ]
+    sent_messages = calls[0]["messages"]
+    assert sent_messages[0]["role"] == "system"
+    assert sent_messages[0]["content"].startswith("policy")
+    assert "task_id" in sent_messages[0]["content"]
+    assert "subtasks" in sent_messages[0]["content"]
+    assert sent_messages[1] == {"role": "user", "content": '{"task_id":"t1"}'}
+
+
+def test_build_schema_instruction_lists_required_field_names():
+    instruction = build_schema_instruction(TaskPlan)
+
+    assert "task_id" in instruction
+    assert "subtasks" in instruction
+    assert "verification_commands" in instruction
+
+
+def test_complete_json_injects_schema_into_system_prompt_for_weak_models(monkeypatch):
+    captured = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content='{"task_id":"t1","subtasks":[{"id":"s1","description":"Check","files":[],"verification":[]}],"verification_commands":[]}'
+                        )
+                    )
+                ]
+            )
+
+    monkeypatch.setattr(model_client_module, "OpenAI", FakeOpenAI)
+    client = OpenAICompatibleModelClient(make_settings())
+
+    client.complete_json("Plan the task.", "{}", TaskPlan)
+
+    system_content = captured["messages"][0]["content"]
+    assert "Plan the task." in system_content
+    assert "JSON Schema" in system_content
+    assert "verification_commands" in system_content
 
 
 def test_client_raises_on_malformed_model_json(monkeypatch):
@@ -167,3 +208,55 @@ def test_active_model_name_missing_registry_fails_before_model_client(
     monkeypatch.setattr(model_client_module, "OpenAI", fail_if_created)
     with pytest.raises(ModelConfigurationError, match="active model"):
         OpenAICompatibleModelClient(settings)
+
+
+def _make_bad_request_error(code: str) -> "openai.BadRequestError":
+    import httpx
+    import openai as openai_module
+
+    response = httpx.Response(
+        400,
+        request=httpx.Request("POST", "https://example.invalid"),
+        json={"error": {"message": "Failed to generate JSON.", "code": code}},
+    )
+    return openai_module.BadRequestError(
+        "Failed to generate JSON.",
+        response=response,
+        body={"message": "Failed to generate JSON.", "code": code},
+    )
+
+
+def test_json_validate_failed_response_is_treated_as_transient(monkeypatch):
+    error = _make_bad_request_error("json_validate_failed")
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            def create(**kwargs):
+                raise error
+
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
+
+    monkeypatch.setattr(model_client_module, "OpenAI", FakeOpenAI)
+    client = OpenAICompatibleModelClient(make_settings())
+
+    with pytest.raises(model_client_module.TransientModelError):
+        client.complete_json("policy", "{}", TaskPlan)
+
+
+def test_other_bad_request_errors_are_not_treated_as_transient(monkeypatch):
+    error = _make_bad_request_error("invalid_api_key")
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            def create(**kwargs):
+                raise error
+
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
+
+    monkeypatch.setattr(model_client_module, "OpenAI", FakeOpenAI)
+    client = OpenAICompatibleModelClient(make_settings())
+
+    import openai as openai_module
+
+    with pytest.raises(openai_module.BadRequestError):
+        client.complete_json("policy", "{}", TaskPlan)

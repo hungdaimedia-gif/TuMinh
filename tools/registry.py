@@ -44,3 +44,18 @@ class ToolRegistry:
         if not isinstance(result, dict):
             raise ToolError(f"Tool {call.name!r} must return a JSON object")
         return result
+
+    def list_tool_names(self) -> tuple[str, ...]:
+        return tuple(sorted(self._tools.keys()))
+
+    def describe_tools(self) -> dict[str, dict[str, Any]]:
+        """Return each registered tool name mapped to its argument JSON Schema.
+
+        Weak/local models cannot guess valid tool names or argument shapes
+        without this, so the orchestrator injects it into the execution
+        payload sent to the model on every step.
+        """
+        return {
+            name: schema.model_json_schema()
+            for name, (schema, _handler) in self._tools.items()
+        }

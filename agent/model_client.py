@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Protocol, TypeVar
 
 from openai import (
     APIConnectionError,
+    APIStatusError,
     APITimeoutError,
+    BadRequestError,
     InternalServerError,
     OpenAI,
     RateLimitError,
@@ -73,6 +76,24 @@ def resolve_model_name(
     return resolved_name
 
 
+def build_schema_instruction(response_type: type[BaseModel]) -> str:
+    """Render an explicit JSON Schema instruction for weaker/local models.
+
+    Generic OpenAI "json_object" mode only guarantees syntactically valid
+    JSON, not a specific set of field names. Smaller/local models frequently
+    guess wrong field names without an explicit schema, so we inject the
+    schema as plain text into the system prompt for every provider.
+    """
+    schema_json = json.dumps(response_type.model_json_schema(), indent=2)
+    return (
+        "Respond with a single JSON object that strictly matches the following "
+        "JSON Schema. Use exactly these field names, include every required "
+        "field, and do not include any field that is not defined in the "
+        "schema.\n\nJSON Schema:\n"
+        f"{schema_json}"
+    )
+
+
 class OpenAICompatibleModelClient:
     def __init__(
         self,
@@ -99,14 +120,16 @@ class OpenAICompatibleModelClient:
         user_payload: str,
         response_type: type[TModel],
     ) -> TModel:
+        full_system_prompt = f"{system_prompt}\n\n{build_schema_instruction(response_type)}"
         try:
             response = self._client.chat.completions.create(
                 model=self.model_name,
                 messages=[
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": full_system_prompt},
                     {"role": "user", "content": user_payload},
                 ],
                 response_format={"type": "json_object"},
+                max_tokens=800,
             )
         except (
             APIConnectionError,
@@ -115,6 +138,16 @@ class OpenAICompatibleModelClient:
             RateLimitError,
         ) as error:
             raise TransientModelError(f"Transient model request failure: {error}") from error
+        except BadRequestError as error:
+            body = error.body if isinstance(error.body, dict) else {}
+            code = error.code or body.get("code")
+            if code == "json_validate_failed":
+                raise TransientModelError(f"Transient model request failure: {error}") from error
+            raise
+        except APIStatusError as error:
+            if error.status_code in {413, 429}:
+                raise TransientModelError(f"Transient model request failure: {error}") from error
+            raise
         if not response.choices or not response.choices[0].message.content:
             raise ModelResponseError("Model response did not contain JSON content")
         return response_type.model_validate_json(response.choices[0].message.content)

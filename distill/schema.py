@@ -223,6 +223,17 @@ class ModelScore(DistillModel):
             raise ValueError("resource measurements must be named, finite, non-negative values")
         return self
 
+    @property
+    def failed_case_ids(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                case_id
+                for case_id, passed in self.case_results.items()
+                if not passed
+            )
+        )
+
+
 
 class BenchmarkMetadata(DistillModel):
     benchmark_id: str | None = None

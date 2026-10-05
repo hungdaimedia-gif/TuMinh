@@ -726,3 +726,60 @@ def test_cli_reports_invalid_input_without_claiming_success(capsys, tmp_path):
 
     assert result == 2
     assert "promot" not in capsys.readouterr().out.lower()
+
+
+def test_list_candidates_multiple_sorted_format(capsys, tmp_path):
+    candidate_root = tmp_path / "candidates"
+    beta_dir = candidate_root / "candidate-beta"
+    alpha_dir = candidate_root / "candidate-alpha"
+    beta_dir.mkdir(parents=True)
+    alpha_dir.mkdir(parents=True)
+
+    (beta_dir / "candidate-manifest.json").write_text(
+        json.dumps({"model_id": "model-b", "model_revision": "rev-2"}),
+        encoding="utf-8",
+    )
+    (alpha_dir / "candidate-manifest.json").write_text(
+        json.dumps({"model_id": "model-a", "model_revision": "rev-1"}),
+        encoding="utf-8",
+    )
+
+    result = cli.main(["list-candidates", "--candidate-root", str(candidate_root)])
+
+    assert result == 0
+    captured = capsys.readouterr().out
+    expected = "candidate-alpha: model-a@rev-1\ncandidate-beta: model-b@rev-2\n"
+    assert captured == expected
+
+
+def test_list_candidates_missing_or_empty_root(capsys, tmp_path):
+    missing_root = tmp_path / "missing_candidates"
+    result_missing = cli.main(["list-candidates", "--candidate-root", str(missing_root)])
+    assert result_missing == 0
+    assert capsys.readouterr().out == "No candidates found.\n"
+
+    empty_root = tmp_path / "empty_candidates"
+    empty_root.mkdir()
+    result_empty = cli.main(["list-candidates", "--candidate-root", str(empty_root)])
+    assert result_empty == 0
+    assert capsys.readouterr().out == "No candidates found.\n"
+
+
+def test_list_candidates_skips_subdirectory_without_manifest(capsys, tmp_path):
+    candidate_root = tmp_path / "candidates"
+    valid_dir = candidate_root / "cand-valid"
+    invalid_dir = candidate_root / "cand-without-manifest"
+    valid_dir.mkdir(parents=True)
+    invalid_dir.mkdir(parents=True)
+
+    (invalid_dir / "some-file.txt").write_text("not a manifest", encoding="utf-8")
+    (valid_dir / "candidate-manifest.json").write_text(
+        json.dumps({"model_id": "model-1", "model_revision": "rev-1"}),
+        encoding="utf-8",
+    )
+
+    result = cli.main(["list-candidates", "--candidate-root", str(candidate_root)])
+
+    assert result == 0
+    assert capsys.readouterr().out == "cand-valid: model-1@rev-1\n"
+

@@ -63,13 +63,21 @@ class FakeReflectionStore:
 
 
 class FakeToolRegistry:
-    def __init__(self, result: dict[str, object] | None = None):
+    def __init__(
+        self,
+        result: dict[str, object] | None = None,
+        tool_descriptions: dict[str, object] | None = None,
+    ):
         self.result = result or {"ok": True}
+        self.tool_descriptions = tool_descriptions or {}
         self.calls = []
 
     def execute(self, call):
         self.calls.append(call)
         return self.result
+
+    def describe_tools(self):
+        return self.tool_descriptions
 
 
 class FakeCommandRunner:

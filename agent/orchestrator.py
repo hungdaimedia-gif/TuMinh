@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable, Sequence
 from typing import Protocol, TypeVar
 
@@ -49,6 +50,7 @@ class Orchestrator:
         git_operations: GitOperations | None = None,
         self_evaluator: GitSelfEvaluator | None = None,
         trajectory: TrajectoryRecorder | None = None,
+        sleep_fn: Callable[[float], None] = time.sleep,
     ):
         if (git_operations is None) != (self_evaluator is None):
             raise ValueError("Git operations and a self-evaluator must be configured together")
@@ -61,6 +63,7 @@ class Orchestrator:
         self.git_operations = git_operations
         self.self_evaluator = self_evaluator
         self.trajectory = trajectory
+        self._sleep_fn = sleep_fn
 
     def run(self, task: Task) -> TaskResult:
         changed_files: list[str] = []
@@ -89,6 +92,7 @@ class Orchestrator:
         history: list[dict[str, object]] = [
             {"type": "plan", "plan": plan.model_dump(mode="json")}
         ]
+        available_tools = self.tools.describe_tools()
         corrections = 0
         for _ in range(self.settings.max_steps):
             payload = json.dumps(
@@ -96,6 +100,7 @@ class Orchestrator:
                     "task": task.model_dump(mode="json"),
                     "plan": plan.model_dump(mode="json"),
                     "history": history,
+                    "available_tools": available_tools,
                 },
                 ensure_ascii=False,
             )
@@ -211,6 +216,7 @@ class Orchestrator:
                 if retries >= self.settings.max_retries:
                     raise
                 retries += 1
+                self._sleep_fn(10 * retries)
 
     def _succeeded(
         self,

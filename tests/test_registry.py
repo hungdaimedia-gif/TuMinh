@@ -59,3 +59,50 @@ def test_registry_requires_dictionary_output():
 
     with pytest.raises(ToolError, match="JSON object"):
         registry.execute(ToolCall(name="read_file", arguments={"path": "file"}))
+
+
+def test_registry_describes_registered_tool_schemas():
+    registry = ToolRegistry()
+    registry.register("read_file", ReadArguments, lambda args: {"text": args.path})
+
+    description = registry.describe_tools()
+
+    assert set(description.keys()) == {"read_file"}
+    assert description["read_file"]["required"] == ["path"]
+    assert "path" in description["read_file"]["properties"]
+
+
+def test_registry_describe_tools_reflects_multiple_registrations():
+    registry = ToolRegistry()
+    registry.register("read_file", ReadArguments, lambda args: {})
+
+    class WriteArguments(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        path: str = Field(min_length=1)
+        content: str
+
+    registry.register("write_file", WriteArguments, lambda args: {})
+
+    description = registry.describe_tools()
+
+    assert set(description.keys()) == {"read_file", "write_file"}
+    assert "content" in description["write_file"]["properties"]
+
+
+def test_registry_list_tool_names_empty():
+    registry = ToolRegistry()
+    assert registry.list_tool_names() == ()
+
+
+def test_registry_list_tool_names_multiple_sorted():
+    registry = ToolRegistry()
+
+    class DummyArgs(BaseModel):
+        pass
+
+    registry.register("write_file", DummyArgs, lambda args: {})
+    registry.register("read_file", DummyArgs, lambda args: {})
+    registry.register("execute_command", DummyArgs, lambda args: {})
+
+    assert registry.list_tool_names() == ("execute_command", "read_file", "write_file")
+

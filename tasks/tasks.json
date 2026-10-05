@@ -9,6 +9,120 @@
       "Run python -m pytest tests/test_config.py -q successfully."
     ],
     "source": "local",
-    "state": "pending"
+    "state": "succeeded"
+  },
+  {
+    "id": "doc-command-timeout-default",
+    "title": "Document the configured command timeout default",
+    "description": "Inspect agent/config.py and create reports/command-timeout.md with one sentence stating the configured default COMMAND_TIMEOUT_SECONDS value used by CommandRunner. Do not change other files.",
+    "acceptance_criteria": [
+      "reports/command-timeout.md states the configured default command timeout in seconds.",
+      "No unrelated files are modified.",
+      "Run python -m pytest tests/test_config.py -q successfully."
+    ],
+    "source": "local",
+    "state": "succeeded"
+  },
+  {
+    "id": "add-distill-list-candidates-command",
+    "title": "Add a list-candidates command to the distillation CLI",
+    "description": "Add a new 'list-candidates' subcommand to distill/cli.py that lists locally staged training candidates. It must accept an optional --candidate-root argument (type Path, default distill/models/candidates, matching the existing train/deploy subcommands' default pattern). For each immediate subdirectory of the candidate root that contains a candidate-manifest.json file, print one line in the form '<directory-name>: <model_id>@<model_revision>' (reading model_id and model_revision from that manifest JSON). Sort output lines alphabetically by directory name. If the candidate root does not exist or contains no such subdirectories, print exactly 'No candidates found.' and nothing else. Do not change the behavior of any existing command. Add unit tests in tests/test_distill_cli.py covering: (1) multiple candidates print sorted one-per-line in the documented format, (2) a missing or empty candidate root prints 'No candidates found.', (3) a subdirectory without a candidate-manifest.json is skipped rather than causing an error.",
+    "acceptance_criteria": [
+      "distill/cli.py defines a new 'list-candidates' subcommand with a --candidate-root option (type Path, default distill/models/candidates).",
+      "Output lines are sorted alphabetically by candidate directory name, in the format '<directory-name>: <model_id>@<model_revision>'.",
+      "An empty or missing candidate root prints exactly 'No candidates found.'",
+      "Subdirectories without a candidate-manifest.json file are silently skipped, not treated as errors.",
+      "New unit tests exist in tests/test_distill_cli.py covering the three scenarios described above.",
+      "Run python -m pytest tests/test_distill_cli.py -q successfully.",
+      "Run python -m pytest -q successfully with no failing tests.",
+      "No unrelated files are modified."
+    ],
+    "source": "local",
+    "state": "succeeded"
+  },
+  {
+    "id": "doc-allowed-command-prefixes",
+    "title": "Document the default allowlisted command prefixes",
+    "description": "Inspect the _DEFAULT_ALLOWED_COMMANDS tuple in agent/config.py and create reports/allowed-commands.md listing each default allowlisted command prefix on its own line, joined by spaces (for example 'git status'), in the same order as they appear in the source. Do not change other files.",
+    "acceptance_criteria": [
+      "reports/allowed-commands.md lists every entry from _DEFAULT_ALLOWED_COMMANDS in agent/config.py, one per line, in source order.",
+      "No unrelated files are modified.",
+      "Run python -m pytest tests/test_config.py -q successfully."
+    ],
+    "source": "local",
+    "state": "succeeded"
+  },
+  {
+    "id": "tool-registry-list-tool-names",
+    "title": "Add a list_tool_names method to ToolRegistry",
+    "description": "Add a list_tool_names() method to the ToolRegistry class in tools/registry.py that returns a tuple of all currently registered tool names, sorted alphabetically. It must not require any arguments and must not mutate registry state. Add unit tests in tests/test_registry.py covering: (1) an empty registry returns an empty tuple, (2) multiple registered tools are returned sorted alphabetically regardless of registration order.",
+    "acceptance_criteria": [
+      "tools/registry.py defines ToolRegistry.list_tool_names() returning a sorted tuple of registered tool names.",
+      "New unit tests exist in tests/test_registry.py covering the empty-registry and multiple-tools-sorted scenarios.",
+      "Run python -m pytest tests/test_registry.py -q successfully.",
+      "Run python -m pytest -q successfully with no failing tests.",
+      "No unrelated files are modified."
+    ],
+    "source": "local",
+    "state": "succeeded"
+  },
+  {
+    "id": "model-score-failed-case-ids",
+    "title": "Add a failed_case_ids property to ModelScore",
+    "description": "Add a read-only failed_case_ids property to the ModelScore model in distill/schema.py that returns a tuple of case_id values from case_results where the recorded result is False, sorted alphabetically. Add unit tests in tests/test_distill_schema.py covering: (1) a ModelScore with all passing cases returns an empty tuple, (2) a ModelScore with a mix of passing and failing cases returns only the failing case_ids, sorted alphabetically.",
+    "acceptance_criteria": [
+      "distill/schema.py defines ModelScore.failed_case_ids as a property returning a sorted tuple of case_ids whose case_results value is False.",
+      "New unit tests exist in tests/test_distill_schema.py covering the all-passing and mixed-results scenarios.",
+      "Run python -m pytest tests/test_distill_schema.py -q successfully.",
+      "Run python -m pytest -q successfully with no failing tests.",
+      "No unrelated files are modified."
+    ],
+    "source": "local",
+    "state": "succeeded"
+  },
+  {
+    "id": "command-runner-is-allowed-check",
+    "title": "Add a dry-run allowlist check to CommandRunner",
+    "description": "Add an is_allowed(argv) method to the CommandRunner class in tools/command_runner.py that returns True if the supplied argv sequence matches one of the configured allowed_argv_prefixes (using the same prefix-matching rule already used inside run()), and False otherwise, without executing the command or raising an exception for a disallowed argv. It must still return False (not raise) for an empty or malformed argv. Add unit tests in tests/test_command_runner.py covering: (1) an allowlisted argv returns True, (2) a non-allowlisted argv returns False without executing anything, (3) an empty argv list returns False.",
+    "acceptance_criteria": [
+      "tools/command_runner.py defines CommandRunner.is_allowed(argv) returning a bool without executing the command.",
+      "An empty or malformed argv returns False rather than raising.",
+      "New unit tests exist in tests/test_command_runner.py covering the three scenarios described above.",
+      "Run python -m pytest tests/test_command_runner.py -q successfully.",
+      "Run python -m pytest -q successfully with no failing tests.",
+      "No unrelated files are modified."
+    ],
+    "source": "local",
+    "state": "succeeded"
+  },
+  {
+    "id": "workspace-list-files-pattern-filter",
+    "title": "Add an optional glob pattern filter to Workspace.list_files",
+    "description": "Add an optional pattern keyword argument (str | None, default None) to Workspace.list_files in tools/workspace.py. When pattern is None, behavior must be unchanged. When pattern is provided (for example '*.py'), only files whose name matches the glob pattern (via Path.match or fnmatch on the file name) are included in the returned sorted list; directory traversal and path-safety checks must remain exactly as before. Add unit tests in tests/test_workspace.py covering: (1) pattern=None preserves the existing unfiltered behavior, (2) a pattern such as '*.md' returns only matching files from a mixed-extension directory, (3) a pattern matching nothing returns an empty list rather than an error.",
+    "acceptance_criteria": [
+      "tools/workspace.py's Workspace.list_files accepts an optional pattern keyword argument that filters results by filename glob match when provided.",
+      "Omitting pattern (or passing None) preserves the current unfiltered behavior exactly.",
+      "Existing path-safety and traversal checks in Workspace.list_files are unchanged.",
+      "New unit tests exist in tests/test_workspace.py covering the three scenarios described above.",
+      "Run python -m pytest tests/test_workspace.py -q successfully.",
+      "Run python -m pytest -q successfully with no failing tests.",
+      "No unrelated files are modified."
+    ],
+    "source": "local",
+    "state": "succeeded"
+  },
+  {
+    "id": "verification-result-failure-summary",
+    "title": "Add a failure_summary property to VerificationResult",
+    "description": "Add a read-only failure_summary property to the VerificationResult model in agent/models.py. When passed is True (and failures is therefore empty), it must return exactly 'All verification commands passed.'. When passed is False, it must return a string starting with the failure count followed by ' verification failure(s): ' and then the failures joined with '; ', in their existing list order (for example '2 verification failure(s): first failure; second failure'). Add unit tests in tests/test_models.py covering: (1) a passing VerificationResult returns the fixed success message, (2) a failing VerificationResult with multiple failures returns the correctly formatted and ordered summary.",
+    "acceptance_criteria": [
+      "agent/models.py defines VerificationResult.failure_summary as a property producing the exact formats described above.",
+      "New unit tests exist in tests/test_models.py covering the passing and multi-failure scenarios.",
+      "Run python -m pytest tests/test_models.py -q successfully.",
+      "Run python -m pytest -q successfully with no failing tests.",
+      "No unrelated files are modified."
+    ],
+    "source": "local",
+    "state": "succeeded"
   }
 ]

@@ -9,6 +9,7 @@ from distill.schema import (
     DatasetManifest,
     ExternalExportHeader,
     ImportProvenance,
+    ModelScore,
     ObservableEvent,
     TrainingMessage,
     TrainingRow,
@@ -228,3 +229,35 @@ def test_import_provenance_rejects_revision_without_model_id():
             source_sha256="a" * 64,
             source_model_revision="revision-1",
         )
+
+
+def test_model_score_failed_case_ids_all_passing():
+    score = ModelScore(
+        model_id="test-model",
+        model_revision="rev-1",
+        case_results={"case_b": True, "case_a": True, "case_c": True},
+        passed_count=3,
+        total_count=3,
+        pass_rate=1.0,
+        resource_measurements={"duration_seconds": 1.0},
+    )
+    assert score.failed_case_ids == ()
+
+
+def test_model_score_failed_case_ids_mixed():
+    score = ModelScore(
+        model_id="test-model",
+        model_revision="rev-1",
+        case_results={
+            "case_z": False,
+            "case_a": True,
+            "case_m": False,
+            "case_b": True,
+        },
+        passed_count=2,
+        total_count=4,
+        pass_rate=0.5,
+        resource_measurements={"duration_seconds": 2.0},
+    )
+    assert score.failed_case_ids == ("case_m", "case_z")
+
