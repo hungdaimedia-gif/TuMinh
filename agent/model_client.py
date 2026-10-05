@@ -7,6 +7,7 @@ from typing import Protocol, TypeVar
 from openai import (
     APIConnectionError,
     APITimeoutError,
+    BadRequestError,
     InternalServerError,
     OpenAI,
     RateLimitError,
@@ -135,6 +136,12 @@ class OpenAICompatibleModelClient:
             RateLimitError,
         ) as error:
             raise TransientModelError(f"Transient model request failure: {error}") from error
+        except BadRequestError as error:
+            body = error.body if isinstance(error.body, dict) else {}
+            code = error.code or body.get("code")
+            if code == "json_validate_failed":
+                raise TransientModelError(f"Transient model request failure: {error}") from error
+            raise
         if not response.choices or not response.choices[0].message.content:
             raise ModelResponseError("Model response did not contain JSON content")
         return response_type.model_validate_json(response.choices[0].message.content)

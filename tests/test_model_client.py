@@ -208,3 +208,55 @@ def test_active_model_name_missing_registry_fails_before_model_client(
     monkeypatch.setattr(model_client_module, "OpenAI", fail_if_created)
     with pytest.raises(ModelConfigurationError, match="active model"):
         OpenAICompatibleModelClient(settings)
+
+
+def _make_bad_request_error(code: str) -> "openai.BadRequestError":
+    import httpx
+    import openai as openai_module
+
+    response = httpx.Response(
+        400,
+        request=httpx.Request("POST", "https://example.invalid"),
+        json={"error": {"message": "Failed to generate JSON.", "code": code}},
+    )
+    return openai_module.BadRequestError(
+        "Failed to generate JSON.",
+        response=response,
+        body={"message": "Failed to generate JSON.", "code": code},
+    )
+
+
+def test_json_validate_failed_response_is_treated_as_transient(monkeypatch):
+    error = _make_bad_request_error("json_validate_failed")
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            def create(**kwargs):
+                raise error
+
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
+
+    monkeypatch.setattr(model_client_module, "OpenAI", FakeOpenAI)
+    client = OpenAICompatibleModelClient(make_settings())
+
+    with pytest.raises(model_client_module.TransientModelError):
+        client.complete_json("policy", "{}", TaskPlan)
+
+
+def test_other_bad_request_errors_are_not_treated_as_transient(monkeypatch):
+    error = _make_bad_request_error("invalid_api_key")
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            def create(**kwargs):
+                raise error
+
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
+
+    monkeypatch.setattr(model_client_module, "OpenAI", FakeOpenAI)
+    client = OpenAICompatibleModelClient(make_settings())
+
+    import openai as openai_module
+
+    with pytest.raises(openai_module.BadRequestError):
+        client.complete_json("policy", "{}", TaskPlan)
