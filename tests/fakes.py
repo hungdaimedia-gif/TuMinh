@@ -87,3 +87,15 @@ class FakeCommandRunner:
             stderr="",
             timed_out=self.timed_out,
         )
+
+
+class FakeSelfEvaluator:
+    def __init__(self, passed: bool):
+        self.passed = passed
+
+    def verify_before_commit(self, changed_files):
+        return VerificationResult(
+            passed=self.passed,
+            commands=[],
+            failures=[] if self.passed else ["self-evaluation failed"],
+        )
