@@ -269,7 +269,11 @@ Test `CommandVerifier` invokes only plan verification argv accepted by `CommandR
 def test_command_verifier_fails_on_nonzero_command():
     verifier = CommandVerifier(command_runner=FakeCommandRunner(exit_code=3))
     result = verifier.verify(
-        TaskPlan(task_id="t1", subtasks=[], verification_commands=[["pytest", "-q"]]),
+        TaskPlan(
+            task_id="t1",
+            subtasks=[Subtask(id="s1", description="Verify change", files=[], verification=[])],
+            verification_commands=[["pytest", "-q"]],
+        ),
         changed_files=[],
     )
     assert result.passed is False
