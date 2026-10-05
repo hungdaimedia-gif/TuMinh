@@ -109,7 +109,7 @@
       "No unrelated files are modified."
     ],
     "source": "local",
-    "state": "pending"
+    "state": "succeeded"
   },
   {
     "id": "verification-result-failure-summary",
