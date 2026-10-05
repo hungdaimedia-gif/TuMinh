@@ -1,0 +1,14 @@
+[
+  {
+    "id": "starter-document-limit",
+    "title": "Document the configured execution-step limit",
+    "description": "Inspect agent/config.py and create reports/execution-step-limit.md with one sentence stating the configured default MAX_STEPS value. Do not change other files.",
+    "acceptance_criteria": [
+      "reports/execution-step-limit.md states the configured maximum execution steps.",
+      "No unrelated files are modified.",
+      "Run python -m pytest tests/test_config.py -q successfully."
+    ],
+    "source": "local",
+    "state": "pending"
+  }
+]

@@ -1,0 +1,3 @@
+{"record_type":"header","schema_version":1,"trajectory_id":"trajectory-runtime-1","task_id":"task-runtime-1","source_type":"runtime","provenance":{"source_name":"tuminh-runtime","imported_at":"2026-10-05T12:00:00Z","source_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"task_outcome":"succeeded","verification_passed":true,"eval_passed":true}
+{"schema_version":1,"task_id":"task-runtime-1","sequence_number":1,"event_type":"task","timestamp":"2026-10-05T12:00:01Z","data":{"title":"Synthetic task"}}
+{"schema_version":1,"task_id":"task-runtime-1","sequence_number":2,"event_type":"verification","timestamp":"2026-10-05T12:00:02Z","data":{"passed":true}}

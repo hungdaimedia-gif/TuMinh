@@ -1,6 +1,6 @@
 # TuMinh Autonomous Coding Agent — Architecture Design
 
-**Status:** Approved design; awaiting review of this written specification
+**Status:** Updated design; review pending
 **Date:** 2026-10-05
 
 ## Goal
@@ -8,8 +8,12 @@
 Create a runnable Python starter for TuMinh, a single-agent autonomous coding
 assistant that ingests queued work, plans and executes bounded code changes,
 runs verification, records outcomes, and can prepare a branch and pull request.
-The starter must run against a local JSON queue without GitHub credentials and
-must support an OpenAI-compatible model endpoint through configuration.
+The runtime also writes sanitized local trajectory events that a later,
+separately scoped distillation phase can explicitly export. It must run against
+a local JSON queue without GitHub credentials and support an OpenAI-compatible
+model endpoint through configuration. When `MODEL_NAME=tuminh-active` is
+selected for local Ollama use, resolve it to the versioned model in the
+distillation registry at process startup.
 
 ## Design decisions
 
@@ -23,6 +27,10 @@ must support an OpenAI-compatible model endpoint through configuration.
 - Bound execution by configurable step, retry, and subprocess time limits.
 - Treat learned skills/rules as proposals. Require an evaluation and human
   approval before loading a proposal into active behavior.
+- Record only observable task/runtime events for future learning; never record
+  hidden chain-of-thought, system prompts, or credentials.
+- Keep trajectory logs local and runtime-only. No automatic upload, training,
+  or inclusion in Git commits.
 
 ## Repository layout
 
@@ -30,8 +38,10 @@ must support an OpenAI-compatible model endpoint through configuration.
 agent/       CLI entry point, orchestration loop, model interface, task schema
 tools/       workspace file operations, command runner, Git and GitHub adapters
 memory/      reflection store (JSON)
+              sanitized task trajectories (JSONL, runtime-only)
 tasks/       local JSON task queue and task examples
 skills/      approved prompt rules and pending skill/rule proposals
+distill/     later optional phase; separate design and implementation plan
 tests/       unit and integration tests with fake model/tool implementations
 evals/       deterministic safety and behavior evaluation cases
 docs/        architecture and usage documentation
@@ -55,6 +65,23 @@ The planner converts a task into a structured plan containing ordered
 subtasks, intended files, and verification commands. Validate the model output
 against a schema before execution. Source text is untrusted input and must
 never override system policy or tool restrictions.
+
+### Trajectory journal and distillation boundary
+
+Append structured, versioned events to a per-task JSONL file under
+`memory/trajectories/`. Events may include the normalized task, generated plan,
+structured assistant decisions, tool-call arguments and redacted results,
+changed-file diffs, verification/eval outcomes, and a concise reflection.
+Exclude hidden/internal reasoning fields, system/developer prompts, raw
+environment values, API keys, and unredacted secret-bearing output. Apply the
+same configured redaction policy used by reflection storage.
+
+Trajectory logs are local runtime state and are ignored by Git. The runtime
+does not upload them or start training automatically. A later `distill/`
+subsystem consumes them only through an explicit export/import action. External
+model-session exports are never scraped; users must manually provide material
+they are authorized to use, and the distillation importer rejects hidden
+reasoning fields.
 
 ### Model and execution loop
 
@@ -97,7 +124,8 @@ disposable or otherwise controlled workspace.
 Append task outcome reflections to `memory/reflection.json` using a validated
 schema. Store task identifiers, outcome, concise lessons, and failure
 categories; do not store API keys, environment values, or full secret-bearing
-command output.
+command output. The event journal and reflection store are separate artifacts:
+reflections do not become training records automatically.
 
 When the agent identifies a reusable lesson, it may create or update a
 proposal under `skills/proposals/`. Proposals are inert and are not added to
@@ -130,6 +158,8 @@ failed commands, or reflection write errors.
 
 - Unit-test task parsing, model response validation, path containment, command
   allowlisting/timeouts, reflection persistence, and Git branch/commit guards.
+- Unit-test trajectory event schemas, redaction, secret exclusion, and the
+  absence of hidden-reasoning/system-prompt fields.
 - Use fakes for the model and external commands so the standard test suite
   needs no API key, GitHub credentials, or network access.
 - Add deterministic eval cases for planning shape, tool argument validation,
@@ -142,6 +172,8 @@ failed commands, or reflection write errors.
 
 - Automatic merging or unrestricted execution on a user's primary branch.
 - Multi-agent coordination, hosted workers, web UI, and production deployment.
+- Model fine-tuning, external session harvesting, and model promotion; these
+  belong to the separately designed `distill/` phase.
 - Autonomous activation of skills or edits to runtime policies.
 - Guarantees that prompt instructions alone can neutralize malicious issue
   content; protection relies on tool boundaries, validation, least privilege,
@@ -161,5 +193,8 @@ failed commands, or reflection write errors.
    commit, and no workflow merges automatically.
 6. Self-improvement produces an inert proposal and cannot activate it without
    eval success and human approval.
-7. The README and `.env.example` explain local queue setup and optional GitHub
+7. Successful and failed tasks write sanitized per-task JSONL events locally;
+   those events contain no secrets, hidden reasoning, or system prompts and
+   are not uploaded or committed automatically.
+8. The README and `.env.example` explain local queue setup and optional GitHub
    operation.

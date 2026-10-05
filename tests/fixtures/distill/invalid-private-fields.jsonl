@@ -1,0 +1,2 @@
+{"record_type":"header","schema_version":1,"trajectory_id":"trajectory-invalid-1","task_id":"task-invalid-1","task_outcome":"succeeded","verification_passed":true,"eval_passed":true}
+{"schema_version":1,"task_id":"task-invalid-1","sequence_number":1,"event_type":"assistant_message","timestamp":"2026-10-05T12:00:01Z","data":{"message":{"role":"assistant","content":"Synthetic response."},"nested":{"thinking":"private field"}}}

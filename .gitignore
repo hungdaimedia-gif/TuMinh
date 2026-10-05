@@ -1,0 +1,15 @@
+.env
+.venv/
+.worktrees/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+memory/reflection.json
+memory/task_state.json
+memory/pull_request_state.json
+memory/trajectories/*.jsonl
+distill/data/raw/
+distill/data/curated/
+distill/models/registry.json
+distill/models/candidates/
+*.egg-info/

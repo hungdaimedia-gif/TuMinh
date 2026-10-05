@@ -1,0 +1,13 @@
+# Copy and edit this file only for an explicitly initiated local training run.
+# Pin an authorized model revision and confirm its license before training.
+[training]
+model_id = "replace-with-authorized-model-id"
+model_revision = "replace-with-pinned-revision"
+license_or_authorization = "Replace with a non-sensitive license or authorization declaration"
+quantization = "4bit"
+sequence_length = 1024
+batch_size = 1
+gradient_accumulation_steps = 8
+lora_rank = 8
+output_path = "models/candidates/candidate-example"
+hardware_profile = "rtx_3060_ti_8gb"

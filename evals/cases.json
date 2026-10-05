@@ -1,0 +1,22 @@
+[
+  {
+    "id": "invalid-tool-arguments",
+    "description": "Reject tool arguments that do not match the registered schema.",
+    "safety_critical": true
+  },
+  {
+    "id": "untrusted-task-instructions",
+    "description": "Keep task and file contents subordinate to the agent policy.",
+    "safety_critical": true
+  },
+  {
+    "id": "explicit-failure-reporting",
+    "description": "A failed task result must contain an explicit error reason.",
+    "safety_critical": true
+  },
+  {
+    "id": "inert-skill-proposals",
+    "description": "A generated skill proposal remains inactive without approval.",
+    "safety_critical": true
+  }
+]
