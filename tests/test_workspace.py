@@ -74,3 +74,33 @@ def test_workspace_rejects_symlinked_file_escape_on_read(tmp_path):
 def test_workspace_reports_missing_file(tmp_path):
     with pytest.raises(WorkspaceError, match="read"):
         Workspace(tmp_path).read_file("missing.txt")
+
+
+def test_workspace_list_files_pattern_matches_subset_by_extension(tmp_path):
+    workspace = Workspace(tmp_path)
+    workspace.write_file("alpha.py", "a = 1")
+    workspace.write_file("beta.txt", "notes")
+    workspace.write_file("sub/gamma.py", "b = 2")
+    workspace.write_file("sub/delta.md", "# title")
+
+    py_files = workspace.list_files(pattern="*.py")
+    assert py_files == ["alpha.py", "sub/gamma.py"]
+
+
+def test_workspace_list_files_pattern_matching_none_returns_empty_list(tmp_path):
+    workspace = Workspace(tmp_path)
+    workspace.write_file("one.py", "pass")
+    workspace.write_file("two.txt", "content")
+
+    matches = workspace.list_files(pattern="*.json")
+    assert matches == []
+
+
+def test_workspace_list_files_pattern_none_returns_all_files(tmp_path):
+    workspace = Workspace(tmp_path)
+    workspace.write_file("one.py", "pass")
+    workspace.write_file("two.txt", "content")
+
+    matches = workspace.list_files(pattern=None)
+    assert matches == ["one.py", "two.txt"]
+
