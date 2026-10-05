@@ -3,9 +3,10 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from datetime import datetime
+from math import isclose, isfinite
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 
 SourceType = Literal["runtime", "external"]
@@ -173,6 +174,145 @@ class CandidateManifest(DistillModel):
     runtime_metadata: dict[str, Any]
     hardware_metadata: dict[str, Any]
     benchmark_id: str = Field(min_length=1)
+
+
+class EvalCase(DistillModel):
+    model_config = ConfigDict(frozen=True)
+
+    case_id: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    safety_critical: StrictBool
+
+
+class ModelScore(DistillModel):
+    model_id: str = Field(min_length=1)
+    model_revision: str = Field(min_length=1)
+    case_results: dict[str, StrictBool] = Field(min_length=1)
+    passed_count: int = Field(ge=0)
+    total_count: int = Field(ge=1)
+    pass_rate: float = Field(ge=0, le=1)
+    resource_measurements: dict[str, float] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_score(self) -> ModelScore:
+        if any(not key for key in self.case_results):
+            raise ValueError("case result IDs must not be empty")
+        if self.total_count != len(self.case_results):
+            raise ValueError("total_count must equal the number of case results")
+        if self.passed_count != sum(self.case_results.values()):
+            raise ValueError("passed_count must equal the number of passing cases")
+        if not isclose(
+            self.pass_rate,
+            self.passed_count / self.total_count,
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        ):
+            raise ValueError("pass_rate must match the reported case results")
+        if any(
+            not key or not isfinite(value) or value < 0
+            for key, value in self.resource_measurements.items()
+        ):
+            raise ValueError("resource measurements must be named, finite, non-negative values")
+        return self
+
+
+class BenchmarkMetadata(DistillModel):
+    benchmark_id: str | None = None
+    baseline_model_id: str | None = None
+    baseline_model_revision: str | None = None
+    candidate_model_id: str | None = None
+    candidate_model_revision: str | None = None
+    dataset_hash: str | None = None
+    eval_set_version: str | None = None
+    safety_critical_case_ids: list[str] = Field(default_factory=list)
+    tool_limits: dict[str, Any] = Field(default_factory=dict)
+    decoding_config: dict[str, Any] = Field(default_factory=dict)
+    software_metadata: dict[str, Any] = Field(default_factory=dict)
+    hardware_metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_dataset_hash(self) -> BenchmarkMetadata:
+        if self.dataset_hash is not None and not re.fullmatch(
+            r"[a-f0-9]{64}", self.dataset_hash
+        ):
+            raise ValueError("dataset_hash must be a lowercase SHA-256 value")
+        return self
+
+    @property
+    def complete(self) -> bool:
+        identifiers = (
+            self.benchmark_id,
+            self.baseline_model_id,
+            self.baseline_model_revision,
+            self.candidate_model_id,
+            self.candidate_model_revision,
+            self.dataset_hash,
+            self.eval_set_version,
+        )
+        configurations = (
+            self.tool_limits,
+            self.decoding_config,
+            self.software_metadata,
+            self.hardware_metadata,
+        )
+        return (
+            all(isinstance(value, str) and bool(value.strip()) for value in identifiers)
+            and isinstance(self.dataset_hash, str)
+            and bool(re.fullmatch(r"[a-f0-9]{64}", self.dataset_hash))
+            and all(isinstance(config, dict) and config for config in configurations)
+            and bool(self.safety_critical_case_ids)
+            and all(
+                isinstance(case_id, str) and case_id.strip()
+                for case_id in self.safety_critical_case_ids
+            )
+            and len(set(self.safety_critical_case_ids))
+            == len(self.safety_critical_case_ids)
+        )
+
+
+class BenchmarkReport(DistillModel):
+    metadata: BenchmarkMetadata
+    baseline_score: ModelScore
+    candidate_score: ModelScore
+    eval_set_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    eval_case_ids: list[str] = Field(min_length=1)
+    safety_case_ids: list[str]
+    safety_results: dict[str, StrictBool]
+
+    @property
+    def eligible_for_promotion(self) -> bool:
+        expected_case_ids = set(self.eval_case_ids)
+        if (
+            not self.metadata.complete
+            or len(expected_case_ids) != len(self.eval_case_ids)
+            or not self.safety_case_ids
+            or not set(self.safety_case_ids) <= expected_case_ids
+            or set(self.safety_case_ids) != set(self.safety_results)
+            or set(self.safety_case_ids) != set(self.metadata.safety_critical_case_ids)
+            or len(set(self.safety_case_ids)) != len(self.safety_case_ids)
+            or any(
+                not isinstance(result, bool) or not result
+                for result in self.safety_results.values()
+            )
+            or set(self.baseline_score.case_results) != expected_case_ids
+            or set(self.candidate_score.case_results) != expected_case_ids
+            or self.baseline_score.total_count != len(self.eval_case_ids)
+            or self.candidate_score.total_count != len(self.eval_case_ids)
+            or not self.baseline_score.resource_measurements
+            or not self.candidate_score.resource_measurements
+        ):
+            return False
+        return (
+            self.baseline_score.model_id == self.metadata.baseline_model_id
+            and self.baseline_score.model_revision == self.metadata.baseline_model_revision
+            and self.candidate_score.model_id == self.metadata.candidate_model_id
+            and self.candidate_score.model_revision == self.metadata.candidate_model_revision
+            and all(
+                self.candidate_score.case_results[case_id] == result
+                for case_id, result in self.safety_results.items()
+            )
+            and self.candidate_score.pass_rate >= self.baseline_score.pass_rate
+        )
 
 
 class DistillSchemaError(ValueError):
