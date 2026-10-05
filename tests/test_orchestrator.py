@@ -14,6 +14,7 @@ from agent.models import (
     VerificationResult,
 )
 from agent.orchestrator import OrchestrationError, Orchestrator
+from agent.trajectory import TrajectoryError
 from tests.fakes import (
     FakePlanner,
     FakeReflectionStore,
@@ -370,3 +371,74 @@ def test_failed_task_verification_does_not_attempt_git_commit():
 
     assert result.status == "failed"
     assert git.commits == 0
+
+
+def test_orchestrator_records_ordered_sanitized_task_trajectory():
+    events = []
+
+    class RecordingJournal:
+        def append(self, task_id, event_type, data):
+            events.append((task_id, event_type, data))
+
+    class FakeGitOperations:
+        def ensure_task_branch(self, task_id):
+            return "tuminh/task-task-1"
+
+        def changed_files(self):
+            return ["README.md"]
+
+        def diff_text(self):
+            return "+safe change\n"
+
+        def commit_verified(self, task_id, message, *, task_verification, self_evaluator):
+            return "commit abc1234"
+
+    orchestrator, _, _, _, _, reflections = build_orchestrator(
+        3,
+        [
+            AgentDecision(
+                tool_call=ToolCall(name="write_file", arguments={"path": "README.md"})
+            ),
+            AgentDecision(final_response="The change passed verification."),
+        ],
+    )
+    orchestrator.git_operations = FakeGitOperations()
+    orchestrator.self_evaluator = FakeSelfEvaluator(passed=True)
+    orchestrator.trajectory = RecordingJournal()
+
+    result = orchestrator.run(sample_task())
+
+    assert result.status == "succeeded"
+    assert [event[1] for event in events] == [
+        "task",
+        "plan",
+        "decision",
+        "tool_call",
+        "tool_result",
+        "decision",
+        "patch",
+        "verification",
+        "reflection",
+    ]
+    patch_event = next(event for event in events if event[1] == "patch")
+    assert patch_event[2] == {"diff": "+safe change\n"}
+    assert reflections.reflections[0].outcome == "succeeded"
+
+
+def test_trajectory_failure_fails_task_instead_of_returning_success():
+    class BrokenJournal:
+        def append(self, task_id, event_type, data):
+            if event_type == "decision":
+                raise TrajectoryError("journal is unavailable")
+
+    orchestrator, _, _, _, _, reflections = build_orchestrator(
+        2,
+        [AgentDecision(final_response="Must not be reported as success.")],
+    )
+    orchestrator.trajectory = BrokenJournal()
+
+    result = orchestrator.run(sample_task())
+
+    assert result.status == "failed"
+    assert "journal is unavailable" in result.error
+    assert reflections.reflections[0].outcome == "failed"
