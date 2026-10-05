@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from agent.models import Task, TaskPlan, TaskResult, VerificationResult
+from tools.command_runner import CommandResult
 
 
 class ScriptedModel:
@@ -59,3 +60,19 @@ class FakeToolRegistry:
     def execute(self, call):
         self.calls.append(call)
         return self.result
+
+
+class FakeCommandRunner:
+    def __init__(self, exit_code: int = 0):
+        self.exit_code = exit_code
+        self.calls: list[list[str]] = []
+
+    def run(self, argv, cwd):
+        self.calls.append(list(argv))
+        return CommandResult(
+            argv=list(argv),
+            exit_code=self.exit_code,
+            stdout="",
+            stderr="",
+            timed_out=False,
+        )
