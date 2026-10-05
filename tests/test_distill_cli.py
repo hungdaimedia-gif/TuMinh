@@ -190,7 +190,9 @@ def test_curate_redacts_model_api_key_and_writes_dataset_manifest(
     assert "Curated" in capsys.readouterr().out
 
 
-def test_train_invokes_trainer_and_does_not_deploy(capsys, tmp_path):
+def test_train_invokes_trainer_and_does_not_deploy(
+    capsys, monkeypatch, tmp_path
+):
     dataset = tmp_path / "dataset.jsonl"
     dataset.write_text(
         json.dumps(
@@ -220,10 +222,25 @@ output_path = "{(tmp_path / 'candidates' / 'candidate-cli').as_posix()}"
 """,
         encoding="utf-8",
     )
+
+    class NoOpHardwareProbe:
+        def reset_peak_measurement(self):
+            pass
+
+        def measure_peak_vram(self):
+            return None
+
+    def reject_real_hardware_probe():
+        pytest.fail("CLI test must not construct the optional torch hardware probe")
+
+    monkeypatch.setattr(
+        cli, "OptionalTorchHardwareProbe", reject_real_hardware_probe
+    )
+    hardware_probe = NoOpHardwareProbe()
     trainer = cli.Trainer(
         backend=FakeTrainingBackend(cuda_available=True),
         candidate_root=tmp_path / "candidates",
-        hardware_probe=cli.OptionalTorchHardwareProbe(),
+        hardware_probe=hardware_probe,
     )
     result = cli.main(
         [
@@ -237,7 +254,12 @@ output_path = "{(tmp_path / 'candidates' / 'candidate-cli').as_posix()}"
     )
 
     assert result == 0
-    assert (tmp_path / "candidates" / "candidate-cli" / "candidate-manifest.json").is_file()
+    manifest_path = (
+        tmp_path / "candidates" / "candidate-cli" / "candidate-manifest.json"
+    )
+    assert manifest_path.is_file()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["hardware_metadata"]["peak_vram_bytes"] is None
     assert "candidate-manifest.json" in capsys.readouterr().out
 
 

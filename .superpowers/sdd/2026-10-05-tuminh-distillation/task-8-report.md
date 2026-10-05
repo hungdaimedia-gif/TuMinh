@@ -48,3 +48,18 @@
 - No live model endpoint, GPU training stack, Ollama deployment, or external
   evaluator was invoked. These integrations remain optional and were covered
   with injected local test doubles.
+
+## Review addendum — CPU-only CLI test isolation
+
+- Replaced the real `OptionalTorchHardwareProbe` in the CLI training test with
+  an injected deterministic no-op probe whose VRAM measurement is `None`.
+- Added a guard that fails if the optional torch probe is constructed, plus
+  an assertion that the resulting candidate manifest records no VRAM
+  measurement.
+- TDD check: restoring the old probe construction made this focused test fail
+  at the guard as expected; injecting the no-op fake made it pass.
+- Re-ran the focused CLI/config/model-client tests (**47 passed**), the full
+  suite (**303 passed, 3 skipped** for unavailable Windows symlink privileges),
+  CLI help (all ten commands shown), offline evals (all four passed), and
+  `git diff --check` (passed).
+- The separately deferred Minor eval-set version-label issue was not changed.
