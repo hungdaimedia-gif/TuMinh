@@ -128,6 +128,10 @@ class DistillModelRegistry:
 
         with self._locked_registry():
             state = self.read()
+            if candidate.candidate_id == state.initial_model:
+                raise RegistryError(
+                    "candidate ID cannot collide with the initialized baseline tag"
+                )
             existing = state.candidates.get(candidate.candidate_id)
             if existing is not None:
                 if existing.model_dump(mode="json") == candidate.model_dump(mode="json"):

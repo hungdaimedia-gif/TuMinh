@@ -298,6 +298,25 @@ def test_promotion_rejects_unknown_candidate_and_invalid_candidate_ids(tmp_path)
     assert registry.read().active_model == "baseline-v1"
 
 
+def test_candidate_registration_rejects_initialized_baseline_tag_without_changing_registry(
+    tmp_path,
+):
+    registry = DistillModelRegistry(tmp_path / "registry.json")
+    registry.initialize_active(
+        "baseline-v1",
+        baseline_model_id="baseline-model",
+        baseline_model_revision="baseline-model-revision",
+    )
+    original_bytes = registry.path.read_bytes()
+    original_state = registry.read()
+
+    with pytest.raises(RegistryError, match="baseline"):
+        registry.register_candidate(valid_candidate_manifest("baseline-v1"))
+
+    assert registry.path.read_bytes() == original_bytes
+    assert registry.read() == original_state
+
+
 def test_registered_candidate_is_not_promoted_until_explicit_approval(tmp_path):
     registry = setup_registry(tmp_path)
 
