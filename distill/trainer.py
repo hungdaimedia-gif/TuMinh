@@ -428,23 +428,38 @@ class Trainer:
     @staticmethod
     def _find_git_root(path: Path) -> Path | None:
         probe = path.resolve(strict=False)
-        for candidate in [probe, *probe.parents]:
-            if not candidate.exists():
-                continue
-            try:
-                result = subprocess.run(
-                    ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-            except OSError:
-                continue
-            if result.returncode == 0:
-                root = result.stdout.strip()
-                if root:
-                    return Path(root).resolve(strict=False)
-        return None
+        marker_root = next(
+            (
+                candidate
+                for candidate in (probe, *probe.parents)
+                if os.path.lexists(candidate / ".git")
+            ),
+            None,
+        )
+        if marker_root is None:
+            return None
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(marker_root), "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as error:
+            raise TrainingConfigError(
+                "Could not identify Git repository for candidate output; refusing to write under repo paths"
+            ) from error
+        root = result.stdout.strip()
+        if result.returncode != 0 or not root:
+            raise TrainingConfigError(
+                "Could not identify Git repository for candidate output; refusing to write under repo paths"
+            )
+        repo_root = Path(root).resolve(strict=False)
+        if repo_root != marker_root.resolve(strict=False):
+            raise TrainingConfigError(
+                "Could not identify Git repository for candidate output; refusing to write under repo paths"
+            )
+        return repo_root
 
     @staticmethod
     def _require_git_ignored(target: Path, repo_root: Path) -> None:
@@ -462,7 +477,6 @@ class Trainer:
                     str(repo_root),
                     "check-ignore",
                     "--quiet",
-                    "--no-index",
                     str(relative_target),
                 ],
                 capture_output=True,

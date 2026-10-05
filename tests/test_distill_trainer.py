@@ -274,6 +274,54 @@ def test_trainer_accepts_gitignored_repo_candidate_root(tmp_path):
     assert (repo / ".gitignore").read_text(encoding="utf-8") == "distill/models/candidates/\n"
 
 
+def test_trainer_rejects_tracked_candidate_path_even_when_ignore_rule_matches(tmp_path):
+    repo, candidate_root = make_git_repo(tmp_path, ignored=True)
+    target = candidate_root / "candidate-tracked"
+    target.write_text("tracked before deletion\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", ".gitignore"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "add", "-f", "distill/models/candidates/candidate-tracked"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    target.unlink()
+    trainer = Trainer(
+        backend=FakeTrainingBackend(cuda_available=True),
+        candidate_root=candidate_root,
+        hardware_probe=FixedHardwareProbe(123456),
+    )
+
+    with pytest.raises(TrainingConfigError, match="ignored"):
+        trainer._validate_output_path(target)
+
+
+def test_trainer_fails_closed_when_repo_marker_exists_but_git_detection_fails(
+    tmp_path, monkeypatch
+):
+    _, candidate_root = make_git_repo(tmp_path, ignored=True)
+    trainer = Trainer(
+        backend=FakeTrainingBackend(cuda_available=True),
+        candidate_root=candidate_root,
+        hardware_probe=FixedHardwareProbe(123456),
+    )
+
+    def git_detection_failure(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 128, "", "fatal: repository unavailable")
+
+    monkeypatch.setattr("distill.trainer.subprocess.run", git_detection_failure)
+
+    with pytest.raises(TrainingConfigError, match="Could not identify Git repository"):
+        trainer._validate_output_path(candidate_root / "candidate-detection-error")
+
+
 def test_rtx_3060_ti_profile_rejects_aggressive_settings(tmp_path):
     backend = FakeTrainingBackend(cuda_available=True)
     trainer = make_trainer(tmp_path, backend)
