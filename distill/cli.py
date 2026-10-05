@@ -83,6 +83,10 @@ def main(
             ).export(arguments.task_id, arguments.output)
             print(f"Exported runtime trajectory to {output}")
         elif command == "import-external":
+            if _resolve(arguments.path) == _resolve(arguments.output):
+                raise DistillImportError(
+                    f"Import output cannot overwrite the supplied source file: {arguments.path}"
+                )
             trajectories = ExternalImporter(
                 secret_values=_configured_secrets(),
             ).import_file(
@@ -90,11 +94,9 @@ def main(
                 source_name=arguments.source_name,
                 license_or_authorization=arguments.license_or_authorization,
                 authorized_by=arguments.authorized_by,
+                source_model_id=arguments.source_model_id,
+                source_model_revision=arguments.source_model_revision,
             )
-            if _resolve(arguments.path) == _resolve(arguments.output):
-                raise DistillImportError(
-                    "Import output cannot overwrite the supplied source file"
-                )
             output = write_trajectory_exports(trajectories, arguments.output)
             print(f"Imported {len(trajectories)} authorized trajectory record(s) to {output}")
         elif command == "curate":
@@ -210,6 +212,8 @@ def _build_parser() -> argparse.ArgumentParser:
     import_external.add_argument("--source-name", required=True)
     import_external.add_argument("--license-or-authorization", required=True)
     import_external.add_argument("--authorized-by", required=True)
+    import_external.add_argument("--source-model-id")
+    import_external.add_argument("--source-model-revision")
     import_external.add_argument("--output", type=Path, required=True)
 
     curate = commands.add_parser("curate")

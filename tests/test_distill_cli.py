@@ -12,6 +12,7 @@ from distill.schema import (
     BenchmarkReport,
     CandidateManifest,
     ModelScore,
+    parse_trajectory_jsonl,
 )
 from tests.distill_fakes import (
     FakeConverter,
@@ -163,6 +164,118 @@ def test_import_external_requires_authorization_provenance(capsys, tmp_path):
     assert error.value.code == 2
     assert not (tmp_path / "out.jsonl").exists()
     assert "required" in capsys.readouterr().err
+
+
+def test_import_external_help_lists_optional_model_provenance(capsys):
+    with pytest.raises(SystemExit) as error:
+        cli.main(["import-external", "--help"])
+
+    assert error.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--source-model-id" in help_text
+    assert "--source-model-revision" in help_text
+
+
+def test_import_external_persists_source_model_provenance(capsys, tmp_path):
+    source = (
+        Path(__file__).parent
+        / "fixtures"
+        / "distill"
+        / "authorized-external-export.jsonl"
+    )
+    output = tmp_path / "raw" / "claude.jsonl"
+
+    result = cli.main(
+        [
+            "import-external",
+            str(source),
+            "--source-name",
+            "claude",
+            "--license-or-authorization",
+            "Synthetic fixture authorization.",
+            "--authorized-by",
+            "test-operator",
+            "--source-model-id",
+            "provider/model",
+            "--source-model-revision",
+            "revision-1",
+            "--output",
+            str(output),
+        ]
+    )
+
+    imported = parse_trajectory_jsonl(output.read_text(encoding="utf-8"))
+    assert result == 0
+    assert imported.provenance.source_model_id == "provider/model"
+    assert imported.provenance.source_model_revision == "revision-1"
+    assert "Imported 1 authorized trajectory record(s)" in capsys.readouterr().out
+
+
+def test_import_external_failure_does_not_write_output_or_echo_secret(capsys, tmp_path):
+    source = tmp_path / "credential.jsonl"
+    lines = (
+        Path(__file__).parent
+        / "fixtures"
+        / "distill"
+        / "authorized-external-export.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
+    secret = "Bearer " + "synthetic-" + "token-value-123456"
+    lines[1] = lines[1].replace("Add a safe check.", secret)
+    source.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    output = tmp_path / "raw" / "rejected.jsonl"
+
+    result = cli.main(
+        [
+            "import-external",
+            str(source),
+            "--source-name",
+            "claude",
+            "--license-or-authorization",
+            "Synthetic fixture authorization.",
+            "--authorized-by",
+            "test-operator",
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert result == 2
+    assert not output.exists()
+    error_text = capsys.readouterr().err
+    assert str(source) in error_text
+    assert secret not in error_text
+
+
+def test_import_external_source_output_collision_identifies_input(capsys, tmp_path):
+    source = tmp_path / "external.jsonl"
+    source.write_bytes(
+        (
+            Path(__file__).parent
+            / "fixtures"
+            / "distill"
+            / "authorized-external-export.jsonl"
+        ).read_bytes()
+    )
+    original_bytes = source.read_bytes()
+
+    result = cli.main(
+        [
+            "import-external",
+            str(source),
+            "--source-name",
+            "claude",
+            "--license-or-authorization",
+            "Synthetic fixture authorization.",
+            "--authorized-by",
+            "test-operator",
+            "--output",
+            str(source),
+        ]
+    )
+
+    assert result == 2
+    assert source.read_bytes() == original_bytes
+    assert str(source) in capsys.readouterr().err
 
 
 def test_curate_redacts_model_api_key_and_writes_dataset_manifest(
