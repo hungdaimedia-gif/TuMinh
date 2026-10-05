@@ -43,3 +43,26 @@ def test_settings_do_not_require_model_key_for_offline_components() -> None:
     settings = Settings.from_env({})
 
     assert settings.model_api_key is None
+
+
+def test_pull_request_creation_is_opt_in(tmp_path: Path) -> None:
+    default_settings = Settings.from_env({"WORKSPACE_ROOT": str(tmp_path)})
+    enabled_settings = Settings.from_env(
+        {
+            "WORKSPACE_ROOT": str(tmp_path),
+            "CREATE_PULL_REQUEST": "true",
+        }
+    )
+
+    assert default_settings.create_pull_request is False
+    assert enabled_settings.create_pull_request is True
+
+
+def test_settings_reject_invalid_pull_request_flag(tmp_path: Path) -> None:
+    with pytest.raises(SettingsError, match="CREATE_PULL_REQUEST"):
+        Settings.from_env(
+            {
+                "WORKSPACE_ROOT": str(tmp_path),
+                "CREATE_PULL_REQUEST": "sometimes",
+            }
+        )

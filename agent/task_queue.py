@@ -68,6 +68,10 @@ class TaskQueue:
                 except FileNotFoundError:
                     pass
 
+    def is_processed(self, task_id: str) -> bool:
+        result = self._load_state().get(task_id)
+        return result is not None and result.status in {"succeeded", "failed"}
+
     def _load_tasks(self) -> list[Task]:
         try:
             raw_tasks = json.loads(self.queue_path.read_text(encoding="utf-8"))

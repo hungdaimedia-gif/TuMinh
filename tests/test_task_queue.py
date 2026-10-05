@@ -75,6 +75,13 @@ def test_failed_task_is_not_retried_automatically(tmp_path):
     )
 
     assert queue.next_task() is None
+    assert queue.is_processed("one") is True
+
+
+def test_unknown_task_is_not_processed(tmp_path):
+    queue = TaskQueue(tmp_path / "tasks.json", tmp_path / "state.json")
+
+    assert queue.is_processed("missing") is False
 
 
 def test_next_pending_task_is_normalized_and_skips_queue_terminal_state(tmp_path):

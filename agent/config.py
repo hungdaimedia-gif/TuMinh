@@ -22,6 +22,7 @@ _DEFAULT_ALLOWED_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("git", "diff"),
     ("git", "add"),
     ("git", "commit"),
+    ("git", "push"),
     ("gh", "issue", "list"),
     ("gh", "pr", "create"),
 )
@@ -38,6 +39,7 @@ class Settings:
     reflection_file: Path
     task_source: TaskSource
     github_repository: str | None
+    create_pull_request: bool
     max_steps: int
     max_corrections: int
     max_retries: int
@@ -104,6 +106,9 @@ class Settings:
 
         api_key = values.get("MODEL_API_KEY", "").strip() or None
         github_repository = values.get("GITHUB_REPOSITORY", "").strip() or None
+        raw_create_pull_request = values.get("CREATE_PULL_REQUEST", "false").strip().lower()
+        if raw_create_pull_request not in {"true", "false"}:
+            raise SettingsError("CREATE_PULL_REQUEST must be 'true' or 'false'")
         return cls(
             model_api_key=api_key,
             model_base_url=model_base_url,
@@ -114,6 +119,7 @@ class Settings:
             reflection_file=workspace_root / "memory" / "reflection.json",
             task_source=task_source,
             github_repository=github_repository,
+            create_pull_request=raw_create_pull_request == "true",
             max_steps=positive_int("MAX_STEPS", 20),
             max_corrections=positive_int("MAX_CORRECTIONS", 2),
             max_retries=positive_int("MAX_RETRIES", 2),
