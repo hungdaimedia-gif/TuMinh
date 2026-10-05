@@ -178,7 +178,9 @@ class ExternalImporter:
                 source_sha256=source_hash,
             )
         except ValidationError as error:
-            raise DistillImportError("External import provenance is invalid") from error
+            raise DistillImportError(
+                f"{source_path}: External import provenance is invalid"
+            ) from error
 
         trajectories: list[TrajectoryExport] = []
         seen_trajectory_ids: set[str] = set()

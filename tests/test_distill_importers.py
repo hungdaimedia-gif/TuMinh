@@ -146,7 +146,7 @@ def test_external_import_rejects_revision_without_model_id(tmp_path):
     source = tmp_path / "agent.jsonl"
     source.write_bytes((FIXTURES / "authorized-external-export.jsonl").read_bytes())
 
-    with pytest.raises(DistillImportError, match="provenance"):
+    with pytest.raises(DistillImportError, match="provenance") as error:
         ExternalImporter().import_file(
             source,
             source_name="claude",
@@ -154,6 +154,10 @@ def test_external_import_rejects_revision_without_model_id(tmp_path):
             authorized_by="test-operator",
             source_model_revision="revision-1",
         )
+
+    assert str(source) in str(error.value)
+    assert "External import provenance is invalid" in str(error.value)
+    assert "revision-1" not in str(error.value)
 
 
 def test_external_import_rejects_source_over_size_limit(tmp_path, monkeypatch):
