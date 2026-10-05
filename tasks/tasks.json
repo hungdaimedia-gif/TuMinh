@@ -38,7 +38,7 @@
       "No unrelated files are modified."
     ],
     "source": "local",
-    "state": "pending"
+    "state": "succeeded"
   },
   {
     "id": "doc-allowed-command-prefixes",
