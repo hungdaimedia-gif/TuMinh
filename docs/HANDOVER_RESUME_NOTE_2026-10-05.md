@@ -12,6 +12,7 @@
 - **Tổng số bài kiểm thử tự động:** **317 Tests Passed**, 3 skipped (100% xanh lá cây).
 - **Hạ tầng Background:** File chạy ngầm `daemon.py` và `start_background.vbs` tích hợp thông báo Windows Toast.
 - **Pull Request trên GitHub:** Đang mở tại **[PR #1](https://github.com/hungdaimedia-gif/TuMinh/pull/1)**.
+- **Xác minh kỹ thuật (20:02 PM):** 317/317 test pass (3 skip do giới hạn symlink Windows) và cơ chế GPU VRAM Guard (`rtx_3060_ti_8gb`) đã được kiểm chứng trực tiếp trên card thật — chi tiết tại [`docs/BIEN_BAN_XAC_MINH_2026-10-05.md`](./BIEN_BAN_XAC_MINH_2026-10-05.md).
 
 ---
 

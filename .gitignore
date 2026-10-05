@@ -13,3 +13,5 @@ distill/data/curated/
 distill/models/registry.json
 distill/models/candidates/
 *.egg-info/
+.libtv/
+*.mp4
