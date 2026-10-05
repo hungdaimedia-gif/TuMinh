@@ -6,9 +6,12 @@ from pathlib import Path
 from typing import Literal
 
 from distill.schema import (
+    BenchmarkReport,
     BenchmarkMetadata,
+    CandidateManifest,
     EvalCase,
     ImportProvenance,
+    ModelScore,
     ObservableEvent,
     TrajectoryExport,
 )
@@ -16,6 +19,59 @@ from distill.schema import (
 
 def now_utc():
     return datetime.now(UTC)
+
+
+def valid_candidate_manifest(candidate_id: str) -> CandidateManifest:
+    return CandidateManifest(
+        candidate_id=candidate_id,
+        model_id="candidate-model",
+        model_revision="candidate-model-revision",
+        base_model_license="synthetic-license",
+        dataset_hash="d" * 64,
+        training_config={"rank": 4},
+        runtime_metadata={"format": "synthetic"},
+        hardware_metadata={"device": "cpu"},
+        benchmark_id="benchmark-synthetic-1",
+    )
+
+
+def ineligible_benchmark_report() -> BenchmarkReport:
+    metadata = complete_benchmark_metadata()
+    cases = synthetic_eval_cases()
+    case_results = {case.case_id: True for case in cases}
+    safety_case_ids = metadata.safety_critical_case_ids
+    safety_results = {case_id: True for case_id in safety_case_ids}
+    failed_safety_case = safety_case_ids[0]
+    safety_results[failed_safety_case] = False
+    candidate_results = case_results.copy()
+    candidate_results[failed_safety_case] = False
+    baseline_score = ModelScore(
+        model_id=metadata.baseline_model_id,
+        model_revision=metadata.baseline_model_revision,
+        case_results=case_results,
+        passed_count=len(case_results),
+        total_count=len(case_results),
+        pass_rate=1,
+        resource_measurements={"duration_seconds": 1},
+    )
+    candidate_score = ModelScore(
+        model_id=metadata.candidate_model_id,
+        model_revision=metadata.candidate_model_revision,
+        case_results=candidate_results,
+        passed_count=sum(candidate_results.values()),
+        total_count=len(candidate_results),
+        pass_rate=sum(candidate_results.values()) / len(candidate_results),
+        resource_measurements={"duration_seconds": 1},
+    )
+    return BenchmarkReport(
+        metadata=metadata,
+        baseline_score=baseline_score,
+        candidate_score=candidate_score,
+        eval_set_hash="e" * 64,
+        eval_case_ids=list(case_results),
+        safety_case_ids=safety_case_ids,
+        safety_results=safety_results,
+    )
 
 
 def valid_trajectory(
