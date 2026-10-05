@@ -7,7 +7,9 @@ from pydantic import ValidationError
 from distill.schema import (
     CandidateManifest,
     DatasetManifest,
+    ExternalExportHeader,
     ImportProvenance,
+    ObservableEvent,
     TrainingMessage,
     TrainingRow,
     TrajectoryExport,
@@ -113,22 +115,20 @@ def test_valid_runtime_jsonl_fixture_parses_as_one_trajectory():
 
 def test_authorized_external_fixture_has_no_private_roles():
     fixture = Path(__file__).parent / "fixtures" / "distill" / "authorized-external-export.jsonl"
-
-    trajectory = parse_trajectory_jsonl(fixture.read_text(encoding="utf-8"))
+    lines = fixture.read_text(encoding="utf-8").splitlines()
 
     messages = [
-        event.data["message"]
-        for event in trajectory.events
-        if "message" in event.data
+        TrainingMessage.model_validate(ObservableEvent.model_validate_json(line).data["message"])
+        for line in lines[1:]
     ]
-    assert [message["role"] for message in messages] == ["user", "assistant", "tool"]
+    assert [message.role for message in messages] == ["user", "assistant", "tool"]
 
 
 def test_external_fixture_with_nested_private_field_is_rejected():
     fixture = Path(__file__).parent / "fixtures" / "distill" / "invalid-private-fields.jsonl"
 
     with pytest.raises(ValidationError, match="prohibited"):
-        parse_trajectory_jsonl(fixture.read_text(encoding="utf-8"))
+        ObservableEvent.model_validate_json(fixture.read_text(encoding="utf-8").splitlines()[1])
 
 
 def test_dataset_manifest_validates_hashes_and_counts():
@@ -179,3 +179,12 @@ def test_runtime_header_fixture_is_valid_json():
 
     assert header["record_type"] == "header"
     assert header["schema_version"] == 1
+
+
+def test_external_export_header_does_not_supply_authorization_by_itself():
+    fixture = Path(__file__).parent / "fixtures" / "distill" / "authorized-external-export.jsonl"
+    header = ExternalExportHeader.model_validate_json(
+        fixture.read_text(encoding="utf-8").splitlines()[0]
+    )
+
+    assert header.task_id == "task-external-1"

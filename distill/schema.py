@@ -76,6 +76,16 @@ class RuntimeExportHeader(DistillModel):
     eval_passed: bool | None
 
 
+class ExternalExportHeader(DistillModel):
+    record_type: Literal["header"]
+    schema_version: Literal[1]
+    trajectory_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    task_outcome: TaskOutcome
+    verification_passed: bool
+    eval_passed: bool | None
+
+
 class TrajectoryExport(DistillModel):
     schema_version: Literal[1]
     trajectory_id: str = Field(min_length=1)
