@@ -123,6 +123,6 @@
       "No unrelated files are modified."
     ],
     "source": "local",
-    "state": "pending"
+    "state": "succeeded"
   }
 ]

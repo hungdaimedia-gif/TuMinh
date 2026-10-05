@@ -79,6 +79,13 @@ class VerificationResult(DomainModel):
             raise ValueError("Failed verification must include a failure reason")
         return self
 
+    @property
+    def failure_summary(self) -> str:
+        if self.passed:
+            return "All verification commands passed."
+        return f"{len(self.failures)} verification failure(s): {'; '.join(self.failures)}"
+
+
 
 class Reflection(DomainModel):
     task_id: str = Field(min_length=1)

@@ -1,7 +1,14 @@
 import pytest
 from pydantic import ValidationError
 
-from agent.models import AgentDecision, Task, TaskPlan, TaskResult, ToolCall
+from agent.models import (
+    AgentDecision,
+    Task,
+    TaskPlan,
+    TaskResult,
+    ToolCall,
+    VerificationResult,
+)
 
 
 def test_task_rejects_unknown_source() -> None:
@@ -49,3 +56,18 @@ def test_failed_task_result_requires_an_error_reason() -> None:
             summary="No details",
             changed_files=[],
         )
+
+
+def test_verification_result_failure_summary_passing() -> None:
+    result = VerificationResult(passed=True, commands=[["pytest"]])
+    assert result.failure_summary == "All verification commands passed."
+
+
+def test_verification_result_failure_summary_failing_multiple() -> None:
+    result = VerificationResult(
+        passed=False,
+        commands=[["pytest"]],
+        failures=["first failure", "second failure"],
+    )
+    assert result.failure_summary == "2 verification failure(s): first failure; second failure"
+
