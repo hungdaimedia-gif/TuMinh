@@ -50,7 +50,7 @@
       "Run python -m pytest tests/test_config.py -q successfully."
     ],
     "source": "local",
-    "state": "pending"
+    "state": "succeeded"
   },
   {
     "id": "tool-registry-list-tool-names",
