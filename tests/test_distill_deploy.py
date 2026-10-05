@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+import multiprocessing
 import subprocess
 from pathlib import Path
 
 import pytest
 
 import distill.deploy as deploy_module
+from distill.schema import CandidateManifest
 from distill.deploy import (
     CandidateDeployer,
     ConversionConfig,
@@ -49,6 +52,90 @@ def make_deployer(registry, converter=None, ollama=None, **kwargs):
     )
 
 
+class _ConcurrentConverter:
+    def __init__(self, role, first_conversion_started, release_first_conversion):
+        self.role = role
+        self.first_conversion_started = first_conversion_started
+        self.release_first_conversion = release_first_conversion
+
+    def convert(self, adapter_path, output_path, config):
+        if self.role == "first":
+            self.first_conversion_started.set()
+            if not self.release_first_conversion.wait(20):
+                raise RuntimeError("test did not release the first conversion")
+        manifest = json.loads(
+            (adapter_path / "candidate-manifest.json").read_text(encoding="utf-8")
+        )
+        output_path.mkdir(parents=True, exist_ok=True)
+        model_path = output_path / "model.gguf"
+        model_path.write_text(manifest["model_revision"], encoding="utf-8")
+        return model_path
+
+
+class _ConcurrentOllamaAdapter:
+    def __init__(self, tag_path, role, second_preflight_passed, install_count):
+        self.tag_path = Path(tag_path)
+        self.role = role
+        self.second_preflight_passed = second_preflight_passed
+        self.install_count = install_count
+
+    def install_candidate(self, model_path, candidate_id):
+        with self.install_count.get_lock():
+            self.install_count.value += 1
+        self.tag_path.write_bytes(Path(model_path).read_bytes())
+        return candidate_id
+
+    def is_installed(self, model_tag):
+        installed = self.tag_path.exists()
+        if self.role == "second" and not installed:
+            self.second_preflight_passed.set()
+        return installed
+
+
+def _run_concurrent_deployment(
+    role,
+    registry_path,
+    candidate_root,
+    adapter_path,
+    manifest_json,
+    tag_path,
+    first_conversion_started,
+    release_first_conversion,
+    second_preflight_passed,
+    second_started,
+    install_count,
+    result_queue,
+):
+    from distill.deploy import CandidateDeployer
+    from distill.registry import DistillModelRegistry
+
+    if role == "second":
+        second_started.set()
+    deployer = CandidateDeployer(
+        converter=_ConcurrentConverter(
+            role,
+            first_conversion_started,
+            release_first_conversion,
+        ),
+        ollama=_ConcurrentOllamaAdapter(
+            tag_path,
+            role,
+            second_preflight_passed,
+            install_count,
+        ),
+        registry=DistillModelRegistry(Path(registry_path)),
+        candidate_root=Path(candidate_root),
+    )
+    try:
+        tag = deployer.install(
+            CandidateManifest.model_validate_json(manifest_json),
+            Path(adapter_path),
+        )
+        result_queue.put((role, "installed", tag))
+    except Exception as error:
+        result_queue.put((role, "rejected", str(error)))
+
+
 def test_deploys_candidate_tag_after_conversion_and_install_without_promotion(tmp_path):
     registry = make_registry(tmp_path)
     converter = FakeConverter()
@@ -69,6 +156,96 @@ def test_deploys_candidate_tag_after_conversion_and_install_without_promotion(tm
     assert set(state.candidates) == {"candidate-v2"}
     assert state.active_model == "baseline-v1"
     assert state.previous_model is None
+
+
+def test_concurrent_deployments_serialize_per_candidate_across_processes(tmp_path):
+    context = multiprocessing.get_context("spawn")
+    registry = make_registry(tmp_path)
+    candidate_id = "candidate-v2"
+    manifests = [
+        valid_candidate_manifest(candidate_id).model_copy(
+            update={"model_revision": f"revision-{role}"}
+        )
+        for role in ("first", "second")
+    ]
+    adapters = []
+    for index, manifest in enumerate(manifests):
+        adapter_path = tmp_path / f"adapter-{index}"
+        adapter_path.mkdir()
+        (adapter_path / "adapter-config.json").write_text("{}", encoding="utf-8")
+        (adapter_path / "candidate-manifest.json").write_text(
+            manifest.model_dump_json(),
+            encoding="utf-8",
+        )
+        adapters.append(adapter_path)
+
+    first_conversion_started = context.Event()
+    release_first_conversion = context.Event()
+    second_preflight_passed = context.Event()
+    second_started = context.Event()
+    install_count = context.Value("i", 0)
+    result_queue = context.Queue()
+    tag_path = tmp_path / "ollama" / candidate_id
+    tag_path.parent.mkdir()
+
+    def worker(role, adapter_path, manifest):
+        return context.Process(
+            target=_run_concurrent_deployment,
+            args=(
+                role,
+                str(registry.path),
+                str(tmp_path / "candidates"),
+                str(adapter_path),
+                manifest.model_dump_json(),
+                str(tag_path),
+                first_conversion_started,
+                release_first_conversion,
+                second_preflight_passed,
+                second_started,
+                install_count,
+                result_queue,
+            ),
+        )
+
+    first = worker("first", adapters[0], manifests[0])
+    second = worker("second", adapters[1], manifests[1])
+    first.start()
+    try:
+        assert first_conversion_started.wait(15), "first deployment did not reach conversion"
+        second.start()
+        assert second_started.wait(15), "second deployment did not start"
+        second_passed_preflight_while_first_was_converting = second_preflight_passed.wait(2)
+    finally:
+        release_first_conversion.set()
+        first.join(20)
+        if second.pid is not None:
+            second.join(20)
+    for process in (first, second):
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
+
+    assert first.exitcode == 0
+    assert second.exitcode == 0
+    assert not second_passed_preflight_while_first_was_converting
+    outcomes = {
+        role: (status, detail)
+        for role, status, detail in (result_queue.get(timeout=5) for _ in range(2))
+    }
+    assert outcomes["first"] == ("installed", candidate_id)
+    assert outcomes["second"][0] == "rejected"
+    assert "already installed or registered" in outcomes["second"][1]
+    assert install_count.value == 1
+
+    state = registry.read()
+    assert state.active_model == "baseline-v1"
+    assert state.previous_model is None
+    assert set(state.candidates) == {candidate_id}
+    manifest_revision = state.candidates[candidate_id].model_revision
+    artifact = tmp_path / "candidates" / "candidate-v2-gguf" / "model.gguf"
+    assert artifact.read_text(encoding="utf-8") == manifest_revision
+    assert tag_path.read_text(encoding="utf-8") == manifest_revision
+    assert not list((tmp_path / "candidates").glob(".candidate-v2-gguf.*"))
 
 
 def test_rejects_invalid_candidate_manifest_before_conversion(tmp_path):
@@ -284,7 +461,9 @@ def test_candidate_ids_at_schema_limit_receive_safe_output_directory(tmp_path):
     )
 
     assert tag == candidate_id
-    artifact_directory = next((tmp_path / "candidates").iterdir())
+    artifact_directory = next(
+        path for path in (tmp_path / "candidates").iterdir() if path.is_dir()
+    )
     assert len(artifact_directory.name) <= 64
     assert artifact_directory.name.endswith("-gguf")
     assert set(registry.read().candidates) == {candidate_id}

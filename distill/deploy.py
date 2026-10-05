@@ -7,10 +7,22 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, ValidationError
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback below
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX only
+    msvcrt = None
 
 from distill.registry import DistillModelRegistry, RegistryError
 from distill.schema import CandidateManifest
@@ -245,10 +257,49 @@ class CandidateDeployer:
             config = ConversionConfig.model_validate(
                 self.conversion_config.model_dump(mode="python")
             )
-            registry_state = self.registry.read()
-        except (ValidationError, RegistryError, TypeError, ValueError) as error:
-            raise DeploymentError("Candidate deployment configuration or registry is invalid") from error
+        except (ValidationError, TypeError, ValueError) as error:
+            raise DeploymentError("Candidate deployment configuration is invalid") from error
         candidate_id = validated_manifest.candidate_id
+        final_output = self.candidate_root / _artifact_directory_name(candidate_id)
+        try:
+            validate_candidate_output_path(
+                final_output,
+                self.candidate_root,
+            )
+        except TrainingConfigError as error:
+            raise DeploymentError(str(error)) from error
+        try:
+            self.candidate_root.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise DeploymentError("Could not create candidate output directory") from error
+        try:
+            validate_candidate_output_path(
+                final_output,
+                self.candidate_root,
+            )
+        except TrainingConfigError as error:
+            raise DeploymentError(str(error)) from error
+
+        with _candidate_deployment_lock(self.candidate_root, candidate_id):
+            return self._install_under_candidate_lock(
+                validated_manifest,
+                adapter,
+                config,
+                final_output,
+            )
+
+    def _install_under_candidate_lock(
+        self,
+        manifest: CandidateManifest,
+        adapter: Path,
+        config: ConversionConfig,
+        final_output: Path,
+    ) -> str:
+        candidate_id = manifest.candidate_id
+        try:
+            registry_state = self.registry.read()
+        except RegistryError as error:
+            raise DeploymentError("Candidate deployment registry is invalid") from error
         if (
             candidate_id in registry_state.installed_models
             or candidate_id in registry_state.candidates
@@ -256,8 +307,6 @@ class CandidateDeployer:
             raise DeploymentError(
                 "Candidate ID is already installed or registered; refusing to overwrite a version"
             )
-
-        final_output = self.candidate_root / _artifact_directory_name(candidate_id)
         try:
             validated_output = validate_candidate_output_path(
                 final_output,
@@ -265,7 +314,6 @@ class CandidateDeployer:
             )
         except TrainingConfigError as error:
             raise DeploymentError(str(error)) from error
-
         try:
             if self.ollama.is_installed(candidate_id):
                 raise DeploymentError(
@@ -277,20 +325,9 @@ class CandidateDeployer:
             raise DeploymentError("Could not verify the Ollama candidate tag is unused") from error
 
         try:
-            self.candidate_root.mkdir(parents=True, exist_ok=True)
-        except OSError as error:
-            raise DeploymentError("Could not create candidate output directory") from error
-        try:
-            validated_output = validate_candidate_output_path(
-                final_output,
-                self.candidate_root,
-            )
-        except TrainingConfigError as error:
-            raise DeploymentError(str(error)) from error
-        try:
             stage = Path(
                 tempfile.mkdtemp(
-                    prefix=f".{validated_manifest.candidate_id}-gguf.",
+                    prefix=f".{candidate_id}-gguf.",
                     dir=self.candidate_root,
                 )
             )
@@ -328,7 +365,7 @@ class CandidateDeployer:
             except OSError as error:
                 raise DeploymentError("Could not finalize converted candidate artifacts") from error
             try:
-                self.registry.register_candidate(validated_manifest)
+                self.registry.register_candidate(manifest)
             except RegistryError as error:
                 raise DeploymentError("Could not register the installed candidate") from error
             return returned_tag
@@ -406,6 +443,52 @@ class CandidateDeployer:
         if resolved.suffix.lower() != ".gguf":
             raise DeploymentError("Converter output must be a GGUF file with the .gguf extension")
         return resolved
+
+
+@contextmanager
+def _candidate_deployment_lock(candidate_root: Path, candidate_id: str):
+    lock_name = hashlib.sha256(candidate_id.encode("ascii")).hexdigest()
+    lock_path = Path(candidate_root) / f".deployment-{lock_name}.lock"
+    if lock_path.is_symlink():
+        raise DeploymentError("Candidate deployment lock must not be a symlink")
+    try:
+        stream = lock_path.open("a+b")
+    except OSError as error:
+        raise DeploymentError("Could not open the candidate deployment lock") from error
+
+    with stream:
+        try:
+            if fcntl is not None:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            elif msvcrt is not None:
+                stream.seek(0, os.SEEK_END)
+                if stream.tell() == 0:
+                    stream.write(b"\0")
+                    stream.flush()
+                stream.seek(0)
+                while True:
+                    try:
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+            else:
+                raise DeploymentError(
+                    "Cross-process candidate deployment locking is unavailable"
+                )
+        except OSError as error:
+            raise DeploymentError("Could not acquire the candidate deployment lock") from error
+        try:
+            yield
+        finally:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                elif msvcrt is not None:
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError as error:
+                raise DeploymentError("Could not release the candidate deployment lock") from error
 
 
 def _require_directory(path: Path, name: str) -> Path:
