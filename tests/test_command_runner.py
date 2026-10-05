@@ -70,3 +70,70 @@ def test_timeout_surfaces_timed_out_result(tmp_path):
     assert raised.value.result is not None
     assert raised.value.result.timed_out is True
     assert raised.value.result.exit_code is None
+
+
+def test_bare_python_is_resolved_to_sys_executable(tmp_path, monkeypatch):
+    import subprocess as subprocess_module
+
+    captured = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return FakeCompleted()
+
+    monkeypatch.setattr(subprocess_module, "run", fake_run)
+    runner = CommandRunner([["python", "-m", "pytest"]], timeout_seconds=5)
+
+    result = runner.run(["python", "-m", "pytest", "-q"], cwd=tmp_path)
+
+    assert captured["command"] == [sys.executable, "-m", "pytest", "-q"]
+    assert result.argv == ["python", "-m", "pytest", "-q"]
+
+
+def test_bare_python3_is_resolved_to_sys_executable(tmp_path, monkeypatch):
+    import subprocess as subprocess_module
+
+    captured = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return FakeCompleted()
+
+    monkeypatch.setattr(subprocess_module, "run", fake_run)
+    runner = CommandRunner([["python3", "-m", "pytest"]], timeout_seconds=5)
+
+    runner.run(["python3", "-m", "pytest", "-q"], cwd=tmp_path)
+
+    assert captured["command"] == [sys.executable, "-m", "pytest", "-q"]
+
+
+def test_explicit_interpreter_path_is_left_unchanged(tmp_path, monkeypatch):
+    import subprocess as subprocess_module
+
+    captured = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return FakeCompleted()
+
+    monkeypatch.setattr(subprocess_module, "run", fake_run)
+    runner = CommandRunner([[sys.executable, "-m", "pytest"]], timeout_seconds=5)
+
+    runner.run([sys.executable, "-m", "pytest", "-q"], cwd=tmp_path)
+
+    assert captured["command"] == [sys.executable, "-m", "pytest", "-q"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Protocol, TypeVar
 
@@ -73,6 +74,24 @@ def resolve_model_name(
     return resolved_name
 
 
+def build_schema_instruction(response_type: type[BaseModel]) -> str:
+    """Render an explicit JSON Schema instruction for weaker/local models.
+
+    Generic OpenAI "json_object" mode only guarantees syntactically valid
+    JSON, not a specific set of field names. Smaller/local models frequently
+    guess wrong field names without an explicit schema, so we inject the
+    schema as plain text into the system prompt for every provider.
+    """
+    schema_json = json.dumps(response_type.model_json_schema(), indent=2)
+    return (
+        "Respond with a single JSON object that strictly matches the following "
+        "JSON Schema. Use exactly these field names, include every required "
+        "field, and do not include any field that is not defined in the "
+        "schema.\n\nJSON Schema:\n"
+        f"{schema_json}"
+    )
+
+
 class OpenAICompatibleModelClient:
     def __init__(
         self,
@@ -99,11 +118,12 @@ class OpenAICompatibleModelClient:
         user_payload: str,
         response_type: type[TModel],
     ) -> TModel:
+        full_system_prompt = f"{system_prompt}\n\n{build_schema_instruction(response_type)}"
         try:
             response = self._client.chat.completions.create(
                 model=self.model_name,
                 messages=[
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": full_system_prompt},
                     {"role": "user", "content": user_payload},
                 ],
                 response_format={"type": "json_object"},

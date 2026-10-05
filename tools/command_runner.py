@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -51,7 +52,7 @@ class CommandRunner:
 
         try:
             completed = subprocess.run(
-                command,
+                _resolve_interpreter(command),
                 shell=False,
                 cwd=Path(cwd),
                 capture_output=True,
@@ -95,3 +96,19 @@ def _to_text(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value
+
+
+def _resolve_interpreter(command: list[str]) -> list[str]:
+    """Resolve a bare "python"/"python3" argv[0] to the running interpreter.
+
+    On machines with multiple Python installations, a literal "python" on
+    PATH can resolve to an unrelated interpreter depending on how the
+    current process itself was launched (a nested subprocess call does not
+    always agree with the invoking shell's own PATH resolution). Pinning to
+    ``sys.executable`` makes verification/tool commands deterministic
+    regardless of ambient PATH quirks. The allowlisted/logged argv (the
+    literal "python") is left untouched; only the executed argv is resolved.
+    """
+    if command and command[0] in {"python", "python3"}:
+        return [sys.executable, *command[1:]]
+    return command

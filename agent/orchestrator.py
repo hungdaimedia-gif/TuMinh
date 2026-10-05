@@ -89,6 +89,7 @@ class Orchestrator:
         history: list[dict[str, object]] = [
             {"type": "plan", "plan": plan.model_dump(mode="json")}
         ]
+        available_tools = self.tools.describe_tools()
         corrections = 0
         for _ in range(self.settings.max_steps):
             payload = json.dumps(
@@ -96,6 +97,7 @@ class Orchestrator:
                     "task": task.model_dump(mode="json"),
                     "plan": plan.model_dump(mode="json"),
                     "history": history,
+                    "available_tools": available_tools,
                 },
                 ensure_ascii=False,
             )
