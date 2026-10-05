@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from math import isfinite
+from types import MappingProxyType
 from typing import Protocol
 
 from pydantic import ValidationError
@@ -17,7 +18,14 @@ from distill.schema import (
 
 
 class ModelEvaluator(Protocol):
-    def evaluate(self, model_name: str, cases: Sequence[EvalCase]) -> ModelScore: ...
+    def evaluate(
+        self,
+        model_name: str,
+        cases: Sequence[EvalCase],
+        *,
+        tool_limits: Mapping[str, object],
+        decoding_config: Mapping[str, object],
+    ) -> ModelScore: ...
 
 
 class BenchmarkError(ValueError):
@@ -52,8 +60,14 @@ class BenchmarkRunner:
         except (ValidationError, ValueError) as error:
             raise BenchmarkError("Benchmark metadata is invalid") from error
 
-        baseline_score = self._evaluate(baseline)
-        candidate_score = self._evaluate(candidate)
+        tool_limits = _immutable_settings(validated_metadata.tool_limits)
+        decoding_config = _immutable_settings(validated_metadata.decoding_config)
+        baseline_score = self._evaluate(
+            baseline, tool_limits=tool_limits, decoding_config=decoding_config
+        )
+        candidate_score = self._evaluate(
+            candidate, tool_limits=tool_limits, decoding_config=decoding_config
+        )
         case_ids = [case.case_id for case in self.eval_set]
         safety_case_ids = [
             case.case_id for case in self.eval_set if case.safety_critical
@@ -79,12 +93,41 @@ class BenchmarkRunner:
             safety_results=safety_results,
         )
 
-    def _evaluate(self, model_name: str) -> ModelScore:
+    def _evaluate(
+        self,
+        model_name: str,
+        *,
+        tool_limits: Mapping[str, object],
+        decoding_config: Mapping[str, object],
+    ) -> ModelScore:
         try:
-            result = self.evaluator.evaluate(model_name, self.eval_set)
+            result = self.evaluator.evaluate(
+                model_name,
+                self.eval_set,
+                tool_limits=tool_limits,
+                decoding_config=decoding_config,
+            )
             return ModelScore.model_validate(result)
         except Exception as error:
             raise BenchmarkError(f"Model evaluation failed for {model_name!r}") from error
+
+
+def _immutable_settings(settings: Mapping[str, object]) -> Mapping[str, object]:
+    try:
+        normalized = json.loads(json.dumps(settings, allow_nan=False))
+    except (TypeError, ValueError) as error:
+        raise BenchmarkError("Benchmark settings must contain JSON values") from error
+    return _freeze_json_value(normalized)
+
+
+def _freeze_json_value(value: object) -> object:
+    if isinstance(value, dict):
+        return MappingProxyType(
+            {key: _freeze_json_value(nested) for key, nested in value.items()}
+        )
+    if isinstance(value, list):
+        return tuple(_freeze_json_value(item) for item in value)
+    return value
 
 
 def is_candidate_eligible(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
 from pathlib import Path
 
@@ -20,10 +21,19 @@ class FakeEvaluator:
     ):
         self.scores = scores
         self.error = error
-        self.calls: list[tuple[str, tuple[EvalCase, ...]]] = []
+        self.calls: list[
+            tuple[str, tuple[EvalCase, ...], Mapping[str, object], Mapping[str, object]]
+        ] = []
 
-    def evaluate(self, model_name: str, cases: tuple[EvalCase, ...]) -> ModelScore:
-        self.calls.append((model_name, cases))
+    def evaluate(
+        self,
+        model_name: str,
+        cases: tuple[EvalCase, ...],
+        *,
+        tool_limits: Mapping[str, object] | None = None,
+        decoding_config: Mapping[str, object] | None = None,
+    ) -> ModelScore:
+        self.calls.append((model_name, cases, tool_limits, decoding_config))
         if self.error is not None:
             raise self.error
         results, resources = self.scores[model_name]
@@ -35,6 +45,24 @@ class FakeEvaluator:
             total_count=len(results),
             pass_rate=sum(results.values()) / len(results),
             resource_measurements=resources,
+        )
+
+
+class MutatingEvaluator(FakeEvaluator):
+    def evaluate(
+        self,
+        model_name: str,
+        cases: tuple[EvalCase, ...],
+        *,
+        tool_limits: Mapping[str, object],
+        decoding_config: Mapping[str, object],
+    ) -> ModelScore:
+        tool_limits["max_tool_calls"] = 100
+        return super().evaluate(
+            model_name,
+            cases,
+            tool_limits=tool_limits,
+            decoding_config=decoding_config,
         )
 
 
@@ -82,15 +110,36 @@ def evaluator_for(
 def test_equal_pass_rates_are_eligible_and_use_the_same_pinned_cases():
     cases = tuple(synthetic_eval_cases())
     evaluator = evaluator_for(cases, 6, 6)
+    metadata = complete_benchmark_metadata()
+    metadata.tool_limits["nested"] = {"allowed": [1, 2]}
 
     report = BenchmarkRunner(evaluator, cases).compare(
-        "baseline-model", "candidate-model", complete_benchmark_metadata()
+        "baseline-model", "candidate-model", metadata
     )
 
     assert report.eligible_for_promotion is True
     assert report.baseline_score.pass_rate == report.candidate_score.pass_rate
     assert evaluator.calls[0][1] is evaluator.calls[1][1]
-    assert [name for name, _ in evaluator.calls] == ["baseline-model", "candidate-model"]
+    assert [call[0] for call in evaluator.calls] == ["baseline-model", "candidate-model"]
+    expected_tool_limits = {
+        **report.metadata.tool_limits,
+        "nested": {"allowed": (1, 2)},
+    }
+    assert evaluator.calls[0][2] == expected_tool_limits
+    assert evaluator.calls[1][2] == expected_tool_limits
+    assert evaluator.calls[0][3] == report.metadata.decoding_config
+    assert evaluator.calls[1][3] == report.metadata.decoding_config
+    assert evaluator.calls[0][2] is evaluator.calls[1][2]
+    assert evaluator.calls[0][3] is evaluator.calls[1][3]
+    assert evaluator.calls[0][2]["nested"] is evaluator.calls[1][2]["nested"]
+    with pytest.raises(TypeError, match="mappingproxy"):
+        evaluator.calls[0][2]["max_tool_calls"] = 1
+    with pytest.raises(TypeError, match="mappingproxy"):
+        evaluator.calls[1][3]["temperature"] = 1
+    with pytest.raises(TypeError, match="mappingproxy"):
+        evaluator.calls[0][2]["nested"]["allowed"] = [9]
+    with pytest.raises(TypeError):
+        evaluator.calls[1][2]["nested"]["allowed"][0] = 9
     assert report.eval_case_ids == [case.case_id for case in cases]
     assert report.safety_results == {
         case.case_id: True for case in cases if case.safety_critical
@@ -100,6 +149,30 @@ def test_equal_pass_rates_are_eligible_and_use_the_same_pinned_cases():
     assert report.metadata.decoding_config
     assert report.metadata.software_metadata
     assert report.metadata.hardware_metadata
+
+
+def test_evaluator_cannot_change_shared_settings_to_create_a_mismatch():
+    cases = tuple(synthetic_eval_cases())
+    evaluator = MutatingEvaluator(
+        {
+            "baseline-model": (
+                score_results(cases, pass_count=6),
+                {"duration_seconds": 2.0, "peak_memory_mb": 100.0},
+            ),
+            "candidate-model": (
+                score_results(cases, pass_count=6),
+                {"duration_seconds": 1.5, "peak_memory_mb": 90.0},
+            ),
+        }
+    )
+
+    with pytest.raises(BenchmarkError, match="evaluation failed") as error:
+        BenchmarkRunner(evaluator, cases).compare(
+            "baseline-model", "candidate-model", complete_benchmark_metadata()
+        )
+
+    assert isinstance(error.value.__cause__, TypeError)
+    assert "mappingproxy" in str(error.value.__cause__)
 
 
 def test_lower_candidate_pass_rate_is_ineligible():
