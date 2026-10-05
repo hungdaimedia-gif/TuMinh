@@ -18,6 +18,12 @@ from distill.schema import (
 
 
 class ModelEvaluator(Protocol):
+    """Injected evaluator contract for reproducible comparisons.
+
+    Implementations must accept the shared settings as keyword-only arguments;
+    legacy two-argument ``evaluate`` implementations are not compatible.
+    """
+
     def evaluate(
         self,
         model_name: str,
@@ -25,7 +31,9 @@ class ModelEvaluator(Protocol):
         *,
         tool_limits: Mapping[str, object],
         decoding_config: Mapping[str, object],
-    ) -> ModelScore: ...
+    ) -> ModelScore:
+        """Score cases using the provided tool limits and decoding settings."""
+        ...
 
 
 class BenchmarkError(ValueError):
@@ -108,6 +116,16 @@ class BenchmarkRunner:
                 decoding_config=decoding_config,
             )
             return ModelScore.model_validate(result)
+        except TypeError as error:
+            if "unexpected keyword argument" in str(error):
+                raise BenchmarkError(
+                    "Evaluator must implement "
+                    "evaluate(model_name, cases, *, tool_limits, decoding_config); "
+                    "update the evaluator to accept both keyword-only settings"
+                ) from error
+            raise BenchmarkError(
+                f"Model evaluation failed for {model_name!r}"
+            ) from error
         except Exception as error:
             raise BenchmarkError(f"Model evaluation failed for {model_name!r}") from error
 

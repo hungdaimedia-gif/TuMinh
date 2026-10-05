@@ -30,8 +30,8 @@ class FakeEvaluator:
         model_name: str,
         cases: tuple[EvalCase, ...],
         *,
-        tool_limits: Mapping[str, object] | None = None,
-        decoding_config: Mapping[str, object] | None = None,
+        tool_limits: Mapping[str, object],
+        decoding_config: Mapping[str, object],
     ) -> ModelScore:
         self.calls.append((model_name, cases, tool_limits, decoding_config))
         if self.error is not None:
@@ -64,6 +64,13 @@ class MutatingEvaluator(FakeEvaluator):
             tool_limits=tool_limits,
             decoding_config=decoding_config,
         )
+
+
+class OutdatedEvaluator:
+    def evaluate(
+        self, model_name: str, cases: tuple[EvalCase, ...]
+    ) -> ModelScore:
+        raise AssertionError("The outdated evaluator should not be invoked")
 
 
 def score_results(
@@ -324,6 +331,15 @@ def test_evaluator_error_fails_closed():
 
     with pytest.raises(BenchmarkError, match="evaluation failed"):
         BenchmarkRunner(evaluator, cases).compare(
+            "baseline-model", "candidate-model", complete_benchmark_metadata()
+        )
+
+
+def test_outdated_evaluator_signature_fails_closed_with_migration_guidance():
+    cases = tuple(synthetic_eval_cases())
+
+    with pytest.raises(BenchmarkError, match="must implement.*tool_limits.*decoding_config"):
+        BenchmarkRunner(OutdatedEvaluator(), cases).compare(
             "baseline-model", "candidate-model", complete_benchmark_metadata()
         )
 
