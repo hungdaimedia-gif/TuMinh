@@ -188,3 +188,43 @@ def test_external_export_header_does_not_supply_authorization_by_itself():
     )
 
     assert header.task_id == "task-external-1"
+
+
+def test_import_provenance_accepts_optional_source_model_identity():
+    provenance = ImportProvenance(
+        source_name="claude",
+        license_or_authorization="Synthetic test authorization.",
+        authorized_by="test-operator",
+        imported_at=now_utc(),
+        source_sha256="a" * 64,
+        source_model_id="provider/model",
+        source_model_revision="revision-1",
+    )
+
+    assert provenance.source_model_id == "provider/model"
+    assert provenance.source_model_revision == "revision-1"
+
+
+def test_import_provenance_defaults_source_model_identity_for_legacy_records():
+    provenance = ImportProvenance(
+        source_name="legacy-agent",
+        license_or_authorization="Synthetic test authorization.",
+        authorized_by="test-operator",
+        imported_at=now_utc(),
+        source_sha256="a" * 64,
+    )
+
+    assert provenance.source_model_id is None
+    assert provenance.source_model_revision is None
+
+
+def test_import_provenance_rejects_revision_without_model_id():
+    with pytest.raises(ValidationError, match="source_model_id"):
+        ImportProvenance(
+            source_name="claude",
+            license_or_authorization="Synthetic test authorization.",
+            authorized_by="test-operator",
+            imported_at=now_utc(),
+            source_sha256="a" * 64,
+            source_model_revision="revision-1",
+        )

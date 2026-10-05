@@ -28,6 +28,8 @@ class ImportProvenance(DistillModel):
     source_name: str = Field(min_length=1)
     license_or_authorization: str | None = None
     authorized_by: str | None = None
+    source_model_id: str | None = Field(default=None, min_length=1)
+    source_model_revision: str | None = Field(default=None, min_length=1)
     imported_at: datetime
     source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
@@ -35,6 +37,12 @@ class ImportProvenance(DistillModel):
     def require_timezone(self) -> ImportProvenance:
         if self.imported_at.tzinfo is None or self.imported_at.utcoffset() is None:
             raise ValueError("imported_at must be timezone-aware")
+        return self
+
+    @model_validator(mode="after")
+    def require_source_model_for_revision(self) -> ImportProvenance:
+        if self.source_model_revision is not None and self.source_model_id is None:
+            raise ValueError("source_model_revision requires source_model_id")
         return self
 
 
