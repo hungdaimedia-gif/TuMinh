@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+
 import json
 import re
 from pathlib import Path
 
+
 from tools.command_runner import CommandError, CommandRunner
+
+
 
 
 class GitHubOperationError(RuntimeError):
     """Raised when a GitHub remote operation fails."""
 
 
+
+
 class GitHubOperations:
     _BRANCH_PATTERN = re.compile(r"[A-Za-z0-9._/-]+\Z")
+
 
     def __init__(
         self,
@@ -24,17 +31,39 @@ class GitHubOperations:
         self.repository = repository
         self.cwd = Path.cwd() if cwd is None else Path(cwd)
 
-    def create_pull_request(self, branch: str, title: str, body: str) -> str:
+
+    def create_pull_request(
+        self,
+        branch: str,
+        title: str,
+        body: str,
+        base: str | None = None,
+    ) -> str:
+        """Create a pull request for ``branch``.
+
+
+        ``base`` optionally overrides the PR target branch (passed as
+        ``gh pr create --base``). When omitted, ``gh`` targets the
+        repository's default branch, which may differ from the branch the
+        task branch was cut from.
+        """
         if (
             not isinstance(branch, str)
             or not self._BRANCH_PATTERN.fullmatch(branch)
             or branch.startswith("-")
         ):
             raise GitHubOperationError("Pull request branch name is invalid")
+        if base is not None and (
+            not isinstance(base, str)
+            or not self._BRANCH_PATTERN.fullmatch(base)
+            or base.startswith("-")
+        ):
+            raise GitHubOperationError("Pull request base branch name is invalid")
         if not isinstance(title, str) or not title.strip():
             raise GitHubOperationError("Pull request title must not be empty")
         if not isinstance(body, str) or not body.strip():
             raise GitHubOperationError("Pull request body must not be empty")
+
 
         existing = self._find_open_pull_request(branch)
         if existing is not None:
@@ -51,6 +80,8 @@ class GitHubOperations:
             "--head",
             branch,
         ]
+        if base:
+            command.extend(["--base", base])
         if self.repository:
             command.extend(["--repo", self.repository])
         result = self._run(command)
@@ -58,6 +89,7 @@ class GitHubOperations:
         if not pull_request_url:
             raise GitHubOperationError("gh pr create completed without returning a URL")
         return pull_request_url
+
 
     def _find_open_pull_request(self, branch: str) -> str | None:
         command = [
@@ -94,6 +126,7 @@ class GitHubOperations:
                 f"Multiple open pull requests already exist for branch {branch}"
             )
         return urls[0] if urls else None
+
 
     def _run(self, argv: list[str]):
         try:

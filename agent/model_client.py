@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from pathlib import Path
 from typing import Protocol, TypeVar
 
@@ -10,7 +12,7 @@ from openai import (
     OpenAI,
     RateLimitError,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from agent.config import Settings
 from distill.registry import DistillModelRegistry, RegistryError
@@ -57,6 +59,17 @@ class ModelClient(Protocol):
     ) -> TModel: ...
 
 
+def build_schema_instruction(response_type: type[BaseModel]) -> str:
+    schema_json = json.dumps(response_type.model_json_schema(), indent=2)
+    return (
+        "Respond with a single JSON object that strictly matches the following "
+        "JSON Schema. Use exactly these field names, include every required "
+        "field, and do not include any field that is not defined in the "
+        "schema.\n\nJSON Schema:\n"
+        f"{schema_json}"
+    )
+
+
 def resolve_model_name(
     configured_name: str,
     resolver: ModelNameResolver | None,
@@ -98,14 +111,41 @@ class OpenAICompatibleModelClient:
         system_prompt: str,
         user_payload: str,
         response_type: type[TModel],
+        max_schema_retries: int = 2,
     ) -> TModel:
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_payload},
+        ]
+        attempts = 0
+        while True:
+            content = self._request_json_content(messages)
+            try:
+                return response_type.model_validate_json(content)
+            except ValidationError as error:
+                if attempts >= max_schema_retries:
+                    error.add_note(
+                        f"Schema validation failed after {attempts + 1} attempt(s)."
+                    )
+                    raise
+                attempts += 1
+                messages.append({"role": "assistant", "content": content})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your previous response did not match the required JSON Schema.\n"
+                            f"Validation error: {error}\n\n"
+                            f"{build_schema_instruction(response_type)}"
+                        ),
+                    }
+                )
+
+    def _request_json_content(self, messages: list[dict[str, str]]) -> str:
         try:
             response = self._client.chat.completions.create(
                 model=self.model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_payload},
-                ],
+                messages=messages,
                 response_format={"type": "json_object"},
             )
         except (
@@ -117,4 +157,4 @@ class OpenAICompatibleModelClient:
             raise TransientModelError(f"Transient model request failure: {error}") from error
         if not response.choices or not response.choices[0].message.content:
             raise ModelResponseError("Model response did not contain JSON content")
-        return response_type.model_validate_json(response.choices[0].message.content)
+        return response.choices[0].message.content

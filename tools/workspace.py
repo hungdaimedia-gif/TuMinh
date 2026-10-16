@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+
+from fnmatch import fnmatch
 from pathlib import Path
+
+
 
 
 class WorkspaceError(ValueError):
     """Raised when a workspace file operation is invalid or unavailable."""
+
+
 
 
 class Workspace:
@@ -16,6 +22,7 @@ class Workspace:
         if not self.root.is_dir():
             raise WorkspaceError(f"Workspace root is not a directory: {self.root}")
 
+
     def read_file(self, path: str) -> str:
         target = self._resolve(path)
         if not target.is_file():
@@ -24,6 +31,7 @@ class Workspace:
             return target.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as error:
             raise WorkspaceError(f"Could not read workspace file {path!r}: {error}") from error
+
 
     def write_file(self, path: str, content: str) -> None:
         target = self._resolve(path)
@@ -34,29 +42,43 @@ class Workspace:
         except (OSError, UnicodeError) as error:
             raise WorkspaceError(f"Could not write workspace file {path!r}: {error}") from error
 
-    def list_files(self, path: str = ".") -> list[str]:
+
+    def list_files(self, path: str = ".", pattern: str | None = None) -> list[str]:
+        """List files in the workspace, optionally filtering by a glob pattern."""
         target = self._resolve(path)
         if not target.exists():
             raise WorkspaceError(f"Workspace path does not exist: {path}")
         if target.is_file():
-            return [target.relative_to(self.root).as_posix()]
+            rel = target.relative_to(self.root).as_posix()
+            if pattern is not None and not fnmatch(rel, pattern):
+                return []
+            return [rel]
         if not target.is_dir():
             raise WorkspaceError(f"Workspace path is not a file or directory: {path}")
+
 
         files: list[str] = []
         try:
             for child in target.rglob("*"):
                 resolved = self._resolve(str(child))
                 if resolved.is_file():
-                    files.append(resolved.relative_to(self.root).as_posix())
+                    rel = resolved.relative_to(self.root).as_posix()
+                    if pattern is None or fnmatch(rel, pattern):
+                        files.append(rel)
         except OSError as error:
             raise WorkspaceError(f"Could not list workspace path {path!r}: {error}") from error
         return sorted(set(files))
 
+
     def _resolve(self, path: str) -> Path:
         if not isinstance(path, str) or not path:
             raise WorkspaceError("Workspace path must be a non-empty string")
-        candidate_path = Path(path)
+        # Normalize Windows-style separators so paths (and the ".." traversal
+        # check below) behave identically on every OS. On POSIX a backslash is
+        # otherwise a valid filename character, which would let "..\x" bypass
+        # the parent-traversal guard.
+        normalized = path.replace("\\", "/")
+        candidate_path = Path(normalized)
         if ".." in candidate_path.parts:
             raise WorkspaceError(f"Parent traversal is not allowed: {path!r}")
         candidate = candidate_path if candidate_path.is_absolute() else self.root / candidate_path

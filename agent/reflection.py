@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import json
 import os
 import re
@@ -9,19 +10,26 @@ from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
+
 from pydantic import ValidationError
 
+
 from agent.models import Reflection, VerificationResult
+
+
 
 
 class ReflectionError(ValueError):
     """Raised when reflection data or a skill proposal cannot be handled safely."""
 
 
+
+
 @dataclass(frozen=True, slots=True)
 class HumanApproval:
     approved_by: str
     confirmed_at: datetime
+
 
     def __post_init__(self) -> None:
         if not self.approved_by.strip():
@@ -30,9 +38,19 @@ class HumanApproval:
             raise ValueError("confirmed_at must be timezone-aware")
 
 
+
+
 class ReflectionStore:
     _SLUG_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
-    _COMMAND_OUTPUT_PATTERN = re.compile(r"\b(?:stdout|stderr)\s*=", re.IGNORECASE)
+    # Matches one "stdout=<value>" / "stderr=<value>" span. The value runs up
+    # to the next "stdout="/stderr=" marker or the end of the text, so quoted
+    # values containing ";" are still captured correctly.
+    _COMMAND_OUTPUT_PATTERN = re.compile(
+        r"\b(?P<key>stdout|stderr)\s*=\s*(?P<value>.*?)"
+        r"(?=(?:\s*;\s*(?:stdout|stderr)\s*=)|\s*$)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
 
     def __init__(self, path: Path, secret_values: Sequence[str] = ()):
         self.path = Path(path)
@@ -43,6 +61,7 @@ class ReflectionStore:
                 reverse=True,
             )
         )
+
 
     def append(self, reflection: Reflection) -> None:
         reflections = self.read_all()
@@ -62,6 +81,7 @@ class ReflectionStore:
         serialized = [item.model_dump(mode="json") for item in reflections]
         self._write_atomic(self.path, serialized, replace=True)
 
+
     def read_all(self) -> list[Reflection]:
         if not self.path.exists():
             return []
@@ -72,6 +92,7 @@ class ReflectionStore:
         if not isinstance(raw_reflections, list):
             raise ReflectionError("Reflection file root must be a JSON array")
 
+
         reflections: list[Reflection] = []
         for index, raw_reflection in enumerate(raw_reflections):
             try:
@@ -81,6 +102,7 @@ class ReflectionStore:
                     f"Invalid reflection at index {index}: {error}"
                 ) from error
         return reflections
+
 
     def propose_skill(self, slug: str, content: str) -> Path:
         if not isinstance(slug, str) or not self._SLUG_PATTERN.fullmatch(slug):
@@ -96,6 +118,7 @@ class ReflectionStore:
         self._write_atomic(proposal_path, sanitized_content, replace=False)
         return proposal_path
 
+
     def activate_proposal(
         self,
         path: Path,
@@ -107,6 +130,7 @@ class ReflectionStore:
             raise ReflectionError("A passing proposal evaluation is required")
         if not isinstance(approval, HumanApproval):
             raise ReflectionError("Explicit human approval is required")
+
 
         root = self._repository_root()
         proposals_dir = self._contained_directory(root / "skills" / "proposals", root)
@@ -120,10 +144,12 @@ class ReflectionStore:
         if len(relative_path.parts) != 1 or not proposal_path.is_file():
             raise ReflectionError("Skill proposal must be a file directly under skills/proposals")
 
+
         try:
             content = proposal_path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as error:
             raise ReflectionError(f"Could not read skill proposal: {error}") from error
+
 
         approved_dir = self._contained_directory(root / "skills" / "approved", root)
         active_path = approved_dir / proposal_path.name
@@ -132,11 +158,13 @@ class ReflectionStore:
         self._write_atomic(active_path, content, replace=False)
         return active_path
 
+
     def _repository_root(self) -> Path:
         try:
             return self.path.parent.parent.resolve(strict=False)
         except OSError as error:
             raise ReflectionError(f"Could not resolve repository root: {error}") from error
+
 
     @staticmethod
     def _contained_directory(path: Path, root: Path) -> Path:
@@ -150,13 +178,20 @@ class ReflectionStore:
             raise ReflectionError(f"Skill path is not a directory: {resolved}")
         return resolved
 
+
     def _sanitize_text(self, text: str) -> str:
-        if self._COMMAND_OUTPUT_PATTERN.search(text):
-            return "[command output omitted]"
-        sanitized = text
+        # Redact only the command-output spans themselves (e.g. the verifier's
+        # "stdout='...'; stderr='...'" strings) instead of dropping the whole
+        # lesson: the surrounding failure reason is the most useful part of a
+        # reflection and must be kept.
+        sanitized = self._COMMAND_OUTPUT_PATTERN.sub(
+            lambda match: f"{match.group('key')}=[command output omitted]",
+            text,
+        )
         for secret in self.secret_values:
             sanitized = sanitized.replace(secret, "[REDACTED]")
         return sanitized
+
 
     @staticmethod
     def _write_atomic(path: Path, content: object, *, replace: bool) -> None:
